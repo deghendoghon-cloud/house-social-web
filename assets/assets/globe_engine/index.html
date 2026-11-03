@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="fa">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <title>House Social Globe</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="cesium/Widgets/CesiumWidget/CesiumWidget.css" />
+  <link rel="stylesheet" href="engine.css" />
+  <script>window.CESIUM_BASE_URL = './cesium/';</script>
+  <script src="cesium/Cesium.js"></script>
+</head>
+<body>
+  <div id="globe"></div>
+  <button id="creditToggle" type="button" aria-label="Map data sources">i</button>
+  <div id="creditPanel" hidden>
+    <div id="creditTitle">منابع داده نقشه / Map data</div>
+    <div id="credits"></div>
+  </div>
+  <div id="fatal" hidden></div>
+  <script src="engine.js"></script>
+</body>
+</html>

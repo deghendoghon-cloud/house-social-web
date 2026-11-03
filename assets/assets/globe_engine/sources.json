@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "_comment": "Registry of map sources for the House Social Cesium globe. Every URL is a template; {z}/{x}/{y} are Web-Mercator tile indices. To move to a self-hosted server later, change only the 'url' fields (or ship a remote copy of this file via --dart-define=GLOBE_SOURCES_URL=...). 'proxy': true means the mobile in-app proxy may fetch and disk-cache it. 'commercial': yes | dev-only | verify.",
+  "sources": {
+    "natural_earth_local": {
+      "type": "tms-local",
+      "url": "cesium/Assets/Textures/NaturalEarthII",
+      "maxLevel": 2,
+      "resolution": "~5 km/px (offline fallback, bundled with CesiumJS)",
+      "credit": "Natural Earth II (public domain), bundled with CesiumJS",
+      "license": "Public domain",
+      "commercial": "yes",
+      "proxy": false
+    },
+    "gibs_blue_marble": {
+      "type": "xyz",
+      "url": "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_ShadedRelief_Bathymetry/default/default/GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpeg",
+      "maxLevel": 8,
+      "maxTerrainLevel": 8,
+      "resolution": "500 m/px",
+      "credit": "Imagery: NASA GIBS (Blue Marble, Shaded Relief & Bathymetry)",
+      "license": "NASA open data (no copyright; acknowledgement requested)",
+      "commercial": "yes",
+      "proxy": true
+    },
+    "s2_cloudless_2016": {
+      "type": "xyz",
+      "url": "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g/{z}/{y}/{x}.jpg",
+      "maxLevel": 14,
+      "minTerrainLevel": 6,
+      "resolution": "10 m/px (Sentinel-2, mosaic of 2016-2017)",
+      "credit": "<a href=\"https://s2maps.eu\" target=\"_blank\">Sentinel-2 cloudless - https://s2maps.eu</a> by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2016 &amp; 2017)",
+      "license": "CC BY 4.0 (2016 vintage only). Free endpoint has no SLA and a fair-use policy; for heavy production traffic self-host or buy a license.",
+      "commercial": "yes",
+      "proxy": true
+    },
+    "usgs_naip_us": {
+      "type": "xyz",
+      "url": "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}",
+      "maxLevel": 16,
+      "minTerrainLevel": 11,
+      "rectangle": [-125.0, 24.0, -66.5, 49.5],
+      "resolution": "~1 m/px (USDA NAIP, contiguous USA only)",
+      "credit": "Imagery: USGS The National Map / USDA NAIP",
+      "license": "US public domain (acknowledgement requested)",
+      "commercial": "yes",
+      "proxy": true
+    },
+    "nsw_imagery_au": {
+      "type": "xyz",
+      "url": "https://maps.six.nsw.gov.au/arcgis/rest/services/public/NSW_Imagery/MapServer/tile/{z}/{y}/{x}",
+      "maxLevel": 19,
+      "minTerrainLevel": 11,
+      "rectangle": [140.9, -37.6, 153.7, -28.1],
+      "resolution": "~0.1-0.5 m/px in cities (New South Wales, Australia only)",
+      "credit": "Imagery: &copy; State of New South Wales (Spatial Services, DCS)",
+      "license": "CC BY (data.nsw.gov.au lists CC BY 3.0/4.0; service is no longer updated). Verify before production.",
+      "commercial": "verify",
+      "proxy": true
+    },
+    "osm_standard": {
+      "type": "xyz",
+      "url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+      "maxLevel": 19,
+      "resolution": "vector-rendered street map",
+      "credit": "&copy; <a href=\"https://www.openstreetmap.org/copyright\" target=\"_blank\">OpenStreetMap</a> contributors",
+      "license": "Data ODbL. tile.openstreetmap.org is for light/dev use only (tile usage policy). Production: self-host or licensed provider.",
+      "commercial": "dev-only",
+      "proxy": true
+    },
+    "aws_terrarium": {
+      "type": "terrarium",
+      "url": "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png",
+      "maxLevel": 15,
+      "resolution": "~30 m (SRTM/Copernicus/etc), up to ~3-10 m in some countries",
+      "credit": "Elevation: Mapzen/Tilezen Terrain Tiles on AWS Open Data (SRTM, GMTED2010, ETOPO1, EU-DEM and others)",
+      "license": "Source-dependent, attribution only (github.com/tilezen/joerd/blob/master/docs/attribution.md)",
+      "commercial": "yes",
+      "proxy": true
+    }
+  },
+  "modes": {
+    "satellite": {
+      "imagery": ["natural_earth_local", "gibs_blue_marble", "s2_cloudless_2016", "usgs_naip_us", "nsw_imagery_au"],
+      "terrain": null
+    },
+    "street": {
+      "imagery": ["natural_earth_local", "osm_standard"],
+      "terrain": null
+    },
+    "terrain": {
+      "imagery": ["natural_earth_local", "gibs_blue_marble", "s2_cloudless_2016", "usgs_naip_us", "nsw_imagery_au"],
+      "terrain": "aws_terrarium",
+      "exaggeration": 1.5
+    }
+  },
+  "overlays": {
+    "borders": { "type": "geojson-lines", "url": "data/borders.json", "credit": "Borders: Natural Earth (public domain)" },
+    "places": { "type": "places", "url": "data/places.json", "credit": "Place names: Natural Earth (public domain)" },
+    "streets": { "type": "xyz-overlay", "source": null, "_comment": "Transparent roads/labels raster for 'hybrid' view. No free key-less global provider exists; point this to a self-hosted overlay later." }
+  }
+}

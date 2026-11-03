@@ -1,0 +1,31 @@
+html, body {
+  margin: 0; padding: 0; width: 100%; height: 100%;
+  overflow: hidden; background: #070b16;
+  -webkit-user-select: none; user-select: none;
+  -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+  touch-action: none; overscroll-behavior: none;
+}
+#globe { position: absolute; inset: 0; }
+.cesium-widget, .cesium-widget canvas { width: 100%; height: 100%; touch-action: none; }
+/* Cesium's own credit bar is replaced by a compact (i) panel (allowed by EOX/OSM for compact mobile UIs). */
+.cesium-widget-credits { display: none !important; }
+#creditToggle {
+  position: absolute; left: 10px; bottom: 10px; z-index: 5;
+  width: 26px; height: 26px; border-radius: 13px; border: 0;
+  background: rgba(0,0,0,.55); color: #fff; font: italic bold 14px Georgia, serif;
+}
+#creditPanel {
+  position: absolute; left: 10px; right: 10px; bottom: 44px; z-index: 6;
+  max-height: 45%; overflow: auto; padding: 10px 12px; border-radius: 12px;
+  background: rgba(10,14,28,.92); color: #dfe6f5; font: 12px/1.6 Tahoma, sans-serif;
+}
+#creditPanel a { color: #8cc8ff; }
+#creditTitle { font-weight: bold; margin-bottom: 6px; }
+#credits .cesium-credit-textContainer, #credits .cesium-credit-imageContainer { display: block; }
+#credits .cesium-credit-delimiter { display: none; }
+#credits span, #credits a { display: block; }
+[hidden] { display: none !important; }
+#fatal {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: #fff; font: 14px Tahoma, sans-serif; text-align: center; padding: 24px;
+}
