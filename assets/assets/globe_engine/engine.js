@@ -48,6 +48,7 @@
   var currentMode = params.get('mode') || 'satellite';
   var overlays = { borders: true, places: true };
   var housesDs = null;
+  var featuredDs = null; // دفتر مرکزی و رویدادها: بدون خوشه‌بندی
   var bordersPrim = null;
   var placesBillboards = null;
   var placesData = null;
@@ -58,6 +59,15 @@
   var tileErrors = {};
   var lastErrorReport = 0;
   var markerLabelMode = false;
+  // Phase-1 additions: day/night, daily imagery, auto-rotate, auto quality
+  var lighting = { dayNight: params.get('daynight') !== '0', cityLights: params.get('lights') !== '0' };
+  var nightLayer = null;
+  var dailyLayer = null;
+  var autoRotate = { enabled: params.get('autorotate') === '1', idleMs: 5000 };
+  var lastInput = Date.now();
+  var rotating = false;
+  var clockTimer = null;
+  var currentQuality = 'normal';
 
   var LOD_BANDS = [
     { band: 'global', min: 6.0e6 },
@@ -73,9 +83,20 @@
   }
 
   // ---------------------------------------------------------------- helpers
+  function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+  // Daily GIBS layers: today's composite is usually still incomplete, so use
+  // UTC now minus `dateLagHours` (default 36 h), as YYYY-MM-DD.
+  function sourceDate(src) {
+    // GIBS publishes a day's global composite with a delay of many hours, so
+    // "yesterday" is often still missing just after midnight UTC: use a lag in hours.
+    var lagH = src.dateLagHours != null ? src.dateLagHours : 36;
+    var d = new Date(Date.now() - lagH * 3600000);
+    return d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate());
+  }
   function tileUrl(id, src) {
-    if (PROXY && src.proxy) return PROXY + id + '/{z}/{x}/{y}';
-    return src.url;
+    var dated = src.url.indexOf('{date}') >= 0;
+    if (PROXY && src.proxy) return PROXY + id + '/{z}/{x}/{y}' + (dated ? '?date=' + sourceDate(src) : '');
+    return dated ? src.url.replace('{date}', sourceDate(src)) : src.url;
   }
   function rect(r) { return r ? Cesium.Rectangle.fromDegrees(r[0], r[1], r[2], r[3]) : undefined; }
 
@@ -98,13 +119,13 @@
   }
 
   // ---------------------------------------------------------------- imagery
-  function createImageryLayer(id) {
+  function createImageryLayer(id, extra) {
     var src = config.sources[id];
     if (!src) return null;
-    var layerOpts = {
+    var layerOpts = Object.assign({
       minimumTerrainLevel: src.minTerrainLevel,
       maximumTerrainLevel: src.maxTerrainLevel
-    };
+    }, extra || {});
     if (src.type === 'tms-local') {
       var p = Cesium.TileMapServiceImageryProvider.fromUrl(src.url, {
         fileExtension: 'jpg', maximumLevel: src.maxLevel, credit: new Cesium.Credit(src.credit)
@@ -222,9 +243,157 @@
       scene.terrainProvider = new Cesium.EllipsoidTerrainProvider();
       scene.verticalExaggeration = 1.0;
     }
+    addExtraLayers();
     refreshMarkerHeights();
     scene.requestRender();
     post('modeChanged', { mode: mode });
+  }
+
+  // ---------------------------------------------------------------- daily imagery + night lights
+  // Layers that sit on top of the mode's base imagery. Re-created on every
+  // mode switch (applyMode clears the imagery collection).
+  function addExtraLayers() {
+    var layers = widget.imageryLayers;
+    dailyLayer = null; nightLayer = null;
+    var dcfg = config.overlays && config.overlays.daily;
+    if (overlays.daily && dcfg && config.sources[dcfg.source]) {
+      // Swath gaps in the daily composite are pure black -> made transparent.
+      dailyLayer = createImageryLayer(dcfg.source, {
+        alpha: dcfg.alpha != null ? dcfg.alpha : 0.85,
+        colorToAlpha: Cesium.Color.BLACK, colorToAlphaThreshold: 0.03
+      });
+      if (dailyLayer) layers.add(dailyLayer);
+    }
+    var lcfg = config.lighting;
+    if (lcfg && lcfg.night && config.sources[lcfg.night]) {
+      // Visible only on the night side of the globe (Cesium day/night blend).
+      nightLayer = createImageryLayer(lcfg.night, { dayAlpha: 0.0, nightAlpha: 1.0 });
+      if (nightLayer) layers.add(nightLayer);
+    }
+    applyLighting();
+    updateDailyVisibility();
+  }
+
+  function updateNightVisibility() {
+    if (!nightLayer) return;
+    var lcfg = config.lighting || {};
+    // Night side is otherwise multiplied dark by Cesium; boost the lights.
+    nightLayer.brightness = lcfg.lightsBrightness || 2.5;
+    // At city zoom the lights are blurry blobs: show the day imagery instead.
+    nightLayer.show = !!lighting.dayNight && !!lighting.cityLights &&
+      camera.positionCartographic.height >= (lcfg.lightsMinHeight || 1.2e6);
+  }
+
+  function updateDailyVisibility() {
+    updateNightVisibility();
+    if (!dailyLayer) return;
+    var dcfg = config.overlays.daily;
+    dailyLayer.show = camera.positionCartographic.height >= (dcfg.minHeight || 3.0e5);
+  }
+
+  // Real-time sun position: the terminator moves with the real clock.
+  function applyLighting() {
+    var g = scene.globe;
+    var on = !!lighting.dayNight;
+    var lcfg = config.lighting || {};
+    g.enableLighting = on;
+    g.dynamicAtmosphereLighting = on;
+    g.dynamicAtmosphereLightingFromSun = on;
+    // Cesium measures these fade distances from the Earth's CENTRE, so the
+    // configured values are heights above the surface plus the radius.
+    var R = 6378137.0;
+    g.lightingFadeOutDistance = R + (lcfg.fadeOutHeight || 1.5e6);
+    g.lightingFadeInDistance = R + (lcfg.fadeInHeight || 4.0e6);
+    // Keep the night-side darkness / night imagery active at every distance;
+    // close-range readability is handled by hiding the night layer below.
+    g.nightFadeOutDistance = 1.0e9;
+    g.nightFadeInDistance = 2.0e9;
+    if (scene.sun) scene.sun.show = on;
+    updateNightVisibility();
+    widget.clock.shouldAnimate = false;
+    widget.clock.currentTime = Cesium.JulianDate.now();
+    clearInterval(clockTimer);
+    if (on) {
+      clockTimer = setInterval(function () {
+        widget.clock.currentTime = Cesium.JulianDate.now();
+        scene.requestRender();
+      }, 60000);
+    }
+    scene.requestRender();
+  }
+
+  // Sub-solar point (where the sun is overhead) for Flutter's day/night chip.
+  function sunInfo() {
+    var t = widget.clock.currentTime;
+    var p = Cesium.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(t);
+    var m = Cesium.Transforms.computeTemeToPseudoFixedMatrix(t);
+    if (!m) return null;
+    var f = Cesium.Matrix3.multiplyByVector(m, p, new Cesium.Cartesian3());
+    var c = Cesium.Cartographic.fromCartesian(f, Cesium.Ellipsoid.WGS84);
+    return c ? { sunLat: Cesium.Math.toDegrees(c.latitude), sunLng: Cesium.Math.toDegrees(c.longitude) } : null;
+  }
+
+  // ---------------------------------------------------------------- auto-rotate
+  // After `idleMs` without touch, the camera turns slowly around the Earth's
+  // polar axis (eastward spin, like the real Earth). Apparent screen speed is
+  // the same at every height; disabled below city level and while a house is
+  // selected.
+  function markInput() { lastInput = Date.now(); }
+  function setupIdleTracking() {
+    ['pointerdown', 'pointermove', 'wheel', 'touchstart', 'keydown'].forEach(function (ev) {
+      scene.canvas.addEventListener(ev, function (e) {
+        if (ev === 'pointermove' && !(e.buttons || e.pointerType === 'touch')) return;
+        markInput();
+      }, { passive: true });
+    });
+    var last = performance.now();
+    function tick(now) {
+      var dt = Math.min((now - last) / 1000, 0.1); last = now;
+      var h = camera.positionCartographic.height;
+      var want = autoRotate.enabled && !paused && !selectedId &&
+        Date.now() - lastInput > autoRotate.idleMs && h >= 4.0e4;
+      if (want) {
+        var base = (2 * Math.PI) / (currentQuality === 'low' ? 180 : 120); // one turn per 2-3 min at globe view
+        var rate = base * Math.min(1, h / 2.0e7);
+        // Real Earth spins eastward: the ground slides left-to-right, i.e. the
+        // longitude under the camera decreases over time.
+        camera.rotate(Cesium.Cartesian3.UNIT_Z, rate * dt);
+        scene.requestRender();
+      }
+      if (want !== rotating) { rotating = want; post('autoRotate', { active: want }); }
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  }
+  var paused = false;
+
+  // ---------------------------------------------------------------- performance probe
+  // Hints for Flutter's automatic low-power mode: weak device, slow tiles.
+  var tileTimes = [];
+  function setupPerfProbe() {
+    try {
+      var po = new PerformanceObserver(function (list) {
+        list.getEntries().forEach(function (e) {
+          if (/\/t\/|\{z\}|\/tile\/|wmts|\.png|\.jpe?g/.test(e.name) && e.duration > 0) {
+            tileTimes.push(e.duration);
+            if (tileTimes.length > 40) tileTimes.shift();
+          }
+        });
+      });
+      po.observe({ type: 'resource', buffered: false });
+    } catch (e) { /* not supported */ }
+    setInterval(function () {
+      var avg = 0;
+      if (tileTimes.length) avg = tileTimes.reduce(function (a, b) { return a + b; }, 0) / tileTimes.length;
+      post('perf', {
+        cores: navigator.hardwareConcurrency || 0,
+        memoryGb: navigator.deviceMemory || 0,
+        avgTileMs: Math.round(avg),
+        samples: tileTimes.length,
+        saveData: !!(navigator.connection && navigator.connection.saveData),
+        effectiveType: (navigator.connection && navigator.connection.effectiveType) || ''
+      });
+    }, 15000);
   }
 
   // ---------------------------------------------------------------- canvas images (RTL-safe text)
@@ -232,15 +401,18 @@
   // canvas (which shapes correctly) and shown as billboard images.
   var FONT = '600 13px Vazirmatn, Tahoma, "Noto Sans Arabic", sans-serif';
   var pinCache = new Map();
-  function pinImage(kind, selected, text) {
-    var key = kind + '|' + (selected ? 1 : 0) + '|' + (text || '');
+  var PIN_COLORS = { mine: '#FFC107', shop: '#42A5F5', friend: '#F06292', house: '#4FC3F7', hq: '#7E57C2', event: '#FF7043' };
+  function pinImage(kind, selected, text, online, live) {
+    var key = kind + '|' + (selected ? 1 : 0) + '|' + (text || '') + '|' + (online ? 1 : 0) + '|' + (live ? 1 : 0);
     if (pinCache.has(key)) return pinCache.get(key);
-    var color = kind === 'mine' ? '#FFC107' : (kind === 'shop' ? '#42A5F5' : '#4FC3F7');
+    var color = PIN_COLORS[kind] || PIN_COLORS.house;
     var dpr = Math.min(window.devicePixelRatio || 1, 3);
-    var r = selected ? 11 : 8;
+    var big = kind === 'hq';
+    var r = (selected ? 11 : 8) + (big ? 4 : 0);
+    var halo = online ? 5 : 0;
     var tw = 0, measure = document.createElement('canvas').getContext('2d');
     if (text) { measure.font = FONT; tw = Math.ceil(measure.measureText(text).width) + 14; }
-    var w = Math.max(2 * r + 6, tw), h = 2 * r + 10 + (text ? 22 : 0);
+    var w = Math.max(2 * (r + halo) + 6, tw), h = 2 * r + 10 + halo + (text ? 22 : 0);
     var c = document.createElement('canvas');
     c.width = w * dpr; c.height = h * dpr;
     var g = c.getContext('2d'); g.scale(dpr, dpr);
@@ -251,16 +423,54 @@
       roundRect(g, cx - tw / 2, 0, tw, 20, 10); g.fill();
       g.fillStyle = '#fff'; g.fillText(text, cx, 10.5);
     }
-    var top = text ? 22 : 0;
+    var top = (text ? 22 : 0) + halo;
+    var cy = top + r + 1;
+    if (online) {
+      // هالهٔ سبز آنلاین
+      g.beginPath(); g.arc(cx, cy, r + halo, 0, Math.PI * 2);
+      g.fillStyle = 'rgba(0,230,118,.35)'; g.fill();
+      g.lineWidth = 2; g.strokeStyle = '#00E676'; g.stroke();
+    }
     g.beginPath(); g.moveTo(cx, top + 2 * r + 8); g.lineTo(cx - 5, top + 2 * r - 2); g.lineTo(cx + 5, top + 2 * r - 2); g.closePath();
     g.fillStyle = color; g.fill();
-    g.beginPath(); g.arc(cx, top + r + 1, r, 0, Math.PI * 2);
+    if (kind === 'event') {
+      // رویداد: مربع گرد (تقویم) به‌جای دایره
+      roundRect(g, cx - r, cy - r, 2 * r, 2 * r, 4);
+    } else {
+      g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2);
+    }
     g.fillStyle = color; g.fill();
     g.lineWidth = selected ? 3 : 2; g.strokeStyle = selected ? '#fff' : 'rgba(255,255,255,.9)'; g.stroke();
-    g.beginPath(); g.arc(cx, top + r + 1, r * 0.35, 0, Math.PI * 2); g.fillStyle = '#fff'; g.fill();
+    if (kind === 'hq') {
+      star(g, cx, cy, r * 0.62, r * 0.27);
+      g.fillStyle = '#fff'; g.fill();
+    } else if (kind === 'event') {
+      g.fillStyle = '#fff'; g.fillRect(cx - r * 0.5, cy - r * 0.1, r, r * 0.55);
+      g.fillRect(cx - r * 0.5, cy - r * 0.5, r, r * 0.22);
+    } else {
+      g.beginPath(); g.arc(cx, cy, r * 0.35, 0, Math.PI * 2); g.fillStyle = '#fff'; g.fill();
+    }
+    if (online) {
+      // نقطهٔ سبز کوچک بالا-راست
+      g.beginPath(); g.arc(cx + r * 0.75, cy - r * 0.75, 3.6, 0, Math.PI * 2);
+      g.fillStyle = '#00E676'; g.fill(); g.lineWidth = 1.5; g.strokeStyle = '#fff'; g.stroke();
+    }
+    if (live) {
+      g.beginPath(); g.arc(cx + r * 0.8, cy - r * 0.8, 4, 0, Math.PI * 2);
+      g.fillStyle = '#FF1744'; g.fill(); g.lineWidth = 1.5; g.strokeStyle = '#fff'; g.stroke();
+    }
     var out = { canvas: c, w: w, h: h };
     pinCache.set(key, out);
     return out;
+  }
+  function star(g, cx, cy, ro, ri) {
+    g.beginPath();
+    for (var i = 0; i < 10; i++) {
+      var a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? ri : ro;
+      var x = cx + Math.cos(a) * rr, y = cy + Math.sin(a) * rr;
+      if (i) g.lineTo(x, y); else g.moveTo(x, y);
+    }
+    g.closePath();
   }
   function roundRect(g, x, y, w, h, r) {
     g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r);
@@ -288,19 +498,24 @@
     return config.modes[currentMode].terrain ? Cesium.HeightReference.RELATIVE_TO_GROUND : Cesium.HeightReference.NONE;
   }
   function markerGraphics(d) {
-    var showText = markerLabelMode && d.title;
-    var img = pinImage(d.kind, d.id === selectedId, showText ? d.title : '');
+    var showText = (markerLabelMode || d.kind === 'hq') && d.title;
+    var img = pinImage(d.kind, d.id === selectedId, showText ? d.title : '', !!d.online, !!d.live);
     return { image: img.canvas, width: img.w, height: img.h };
   }
   function setMarkers(list) {
     housesDs.entities.suspendEvents();
+    featuredDs.entities.suspendEvents();
     var seen = new Set();
     (list || []).forEach(function (d) {
       if (typeof d.lat !== 'number' || typeof d.lng !== 'number') return;
       seen.add(d.id);
       var pos = Cesium.Cartesian3.fromDegrees(d.lng, d.lat, 15);
       var g = markerGraphics(d);
+      var ds = d.layer === 'featured' ? featuredDs : housesDs;
       var existing = markers.get(d.id);
+      if (existing && existing.ds !== ds) {
+        existing.ds.entities.remove(existing.entity); markers.delete(d.id); existing = null;
+      }
       if (existing) {
         existing.data = d;
         existing.entity.position = pos;
@@ -309,23 +524,26 @@
         existing.entity.billboard.height = g.height;
         return;
       }
-      var e = housesDs.entities.add({
+      var e = ds.entities.add({
         id: 'house:' + d.id,
         position: pos,
         billboard: {
           image: g.image, width: g.width, height: g.height,
           verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
           heightReference: markerHeightReference(),
-          scaleByDistance: new Cesium.NearFarScalar(2.0e3, 1.0, 1.5e7, 0.7)
+          scaleByDistance: new Cesium.NearFarScalar(2.0e3, 1.0, 1.5e7, 0.7),
+          // نقاط ویژه کمی جلوتر از خانه‌ها رسم می‌شوند
+          eyeOffset: ds === featuredDs ? new Cesium.Cartesian3(0, 0, -50) : Cesium.Cartesian3.ZERO
         }
       });
       e.houseId = d.id;
-      markers.set(d.id, { entity: e, data: d });
+      markers.set(d.id, { entity: e, data: d, ds: ds });
     });
     Array.from(markers.keys()).forEach(function (id) {
-      if (!seen.has(id)) { housesDs.entities.remove(markers.get(id).entity); markers.delete(id); }
+      if (!seen.has(id)) { var m = markers.get(id); m.ds.entities.remove(m.entity); markers.delete(id); }
     });
     housesDs.entities.resumeEvents();
+    featuredDs.entities.resumeEvents();
     scene.requestRender();
     post('markersApplied', { count: markers.size });
   }
@@ -450,7 +668,10 @@
       lng: Cesium.Math.toDegrees(center ? center.longitude : c.longitude),
       height: c.height,
       band: bandFor(c.height),
-      heading: Cesium.Math.toDegrees(camera.heading)
+      heading: Cesium.Math.toDegrees(camera.heading),
+      pitch: Cesium.Math.toDegrees(camera.pitch),
+      camLat: Cesium.Math.toDegrees(c.latitude),
+      camLng: Cesium.Math.toDegrees(c.longitude)
     };
   }
   function pickCenter() {
@@ -468,6 +689,9 @@
       if (wantLabels !== markerLabelMode) { markerLabelMode = wantLabels; refreshMarkerImages(); }
       if (bordersPrim) bordersPrim.show = overlays.borders && st.height > 1.5e5;
       updatePlaces();
+      updateDailyVisibility();
+      var sun = lighting.dayNight ? sunInfo() : null;
+      if (sun) { st.sunLat = sun.sunLat; st.sunLng = sun.sunLng; }
       post('camera', st);
     };
     clearTimeout(camTimer);
@@ -475,14 +699,23 @@
   }
 
   function flyTo(cmd) {
-    camera.flyTo({
+    markInput();
+    var opts = {
       destination: Cesium.Cartesian3.fromDegrees(cmd.lng, cmd.lat, cmd.height || 4.5e4),
-      orientation: { heading: 0, pitch: Cesium.Math.toRadians(cmd.pitch != null ? cmd.pitch : -90), roll: 0 },
-      duration: cmd.durationMs != null ? cmd.durationMs / 1000 : 2.0
-    });
+      orientation: {
+        heading: Cesium.Math.toRadians(cmd.heading || 0),
+        pitch: Cesium.Math.toRadians(cmd.pitch != null ? cmd.pitch : -90),
+        roll: 0
+      }
+    };
+    // `cameraView`: lat/lng are the camera position itself (saved default view).
+    if (cmd.durationMs === 0) camera.setView(opts);
+    else camera.flyTo(Object.assign(opts, { duration: cmd.durationMs != null ? cmd.durationMs / 1000 : 2.0 }));
+    scene.requestRender();
   }
 
   function zoomBy(factor) {
+    markInput();
     var h = camera.positionCartographic.height;
     if (factor > 1) camera.zoomIn(h * (1 - 1 / factor));
     else camera.zoomOut(h * (1 / factor - 1));
@@ -528,10 +761,20 @@
   // ---------------------------------------------------------------- quality
   function setQuality(q) {
     var g = scene.globe;
-    if (q === 'low') { g.maximumScreenSpaceError = 3; g.tileCacheSize = 60; widget.resolutionScale = 0.85; }
-    else if (q === 'high') { g.maximumScreenSpaceError = 1.5; g.tileCacheSize = 250; widget.resolutionScale = 1.0; }
-    else { g.maximumScreenSpaceError = 2; g.tileCacheSize = 120; widget.resolutionScale = 1.0; }
+    currentQuality = q === 'low' || q === 'high' ? q : 'normal';
+    if (q === 'low') {
+      // battery / weak GPU / slow network: fewer & coarser tiles, 30 fps cap, no fog
+      g.maximumScreenSpaceError = 3; g.tileCacheSize = 60; widget.resolutionScale = 0.75;
+      widget.targetFrameRate = 30; scene.fog.enabled = false; g.showGroundAtmosphere = false;
+    } else if (q === 'high') {
+      g.maximumScreenSpaceError = 1.5; g.tileCacheSize = 250; widget.resolutionScale = 1.0;
+      widget.targetFrameRate = undefined; scene.fog.enabled = true; g.showGroundAtmosphere = true;
+    } else {
+      g.maximumScreenSpaceError = 2; g.tileCacheSize = 120; widget.resolutionScale = 1.0;
+      widget.targetFrameRate = undefined; scene.fog.enabled = true; g.showGroundAtmosphere = true;
+    }
     scene.requestRender();
+    post('qualityApplied', { quality: currentQuality });
   }
 
   // ---------------------------------------------------------------- commands
@@ -547,17 +790,29 @@
       case 'setOverlays':
         if (cmd.borders != null) overlays.borders = !!cmd.borders;
         if (cmd.places != null) overlays.places = !!cmd.places;
+        if (cmd.daily != null && !!cmd.daily !== !!overlays.daily) {
+          overlays.daily = !!cmd.daily;
+          applyMode(currentMode); // rebuild layer stack (keeps order: base, daily, night)
+        }
         if (bordersPrim) bordersPrim.show = overlays.borders && camera.positionCartographic.height > 1.5e5;
         updatePlaces(); scene.requestRender(); break;
       case 'select':
-        selectedId = cmd.id || null; refreshMarkerImages(); break;
+        selectedId = cmd.id || null; refreshMarkerImages(); markInput(); break;
+      case 'setLighting':
+        if (cmd.dayNight != null) lighting.dayNight = !!cmd.dayNight;
+        if (cmd.cityLights != null) lighting.cityLights = !!cmd.cityLights;
+        applyLighting(); onCameraChanged(); break;
+      case 'setAutoRotate':
+        autoRotate.enabled = !!cmd.enabled;
+        if (cmd.idleMs) autoRotate.idleMs = Math.max(1000, cmd.idleMs);
+        markInput(); break;
       case 'resetNorth':
         camera.flyTo({ destination: camera.positionWC.clone(), orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 }, duration: 0.6 });
         break;
       case 'setQuality': setQuality(cmd.quality); break;
       case 'reload': tileErrors = {}; applyMode(currentMode); break;
-      case 'pause': widget.useDefaultRenderLoop = false; break;
-      case 'resume': widget.useDefaultRenderLoop = true; scene.requestRender(); break;
+      case 'pause': paused = true; widget.useDefaultRenderLoop = false; break;
+      case 'resume': paused = false; markInput(); widget.useDefaultRenderLoop = true; scene.requestRender(); break;
       case 'ping': post('pong', { t: cmd.t }); break;
     }
   }
@@ -565,7 +820,24 @@
   window.HouseGlobe = {
     receive: receive,
     _outbox: outbox,
-    _state: function () { return { mode: currentMode, markers: markers.size, camera: widget ? cameraState() : null, errors: tileErrors }; },
+    // آزمایش: داده‌ها و موقعیت صفحهٔ نقاط (فقط خواندنی)
+    _markers: function () {
+      return Array.from(markers.values()).map(function (m) {
+        var d = Object.assign({}, m.data, { ds: m.ds === featuredDs ? 'featured' : 'houses' });
+        var p = m.entity.position && m.entity.position.getValue(widget.clock.currentTime);
+        var w = p && Cesium.SceneTransforms.worldToWindowCoordinates(scene, p);
+        if (w) { d.sx = w.x; d.sy = w.y; }
+        return d;
+      });
+    },
+    _state: function () {
+      return {
+        mode: currentMode, markers: markers.size, featured: featuredDs ? featuredDs.entities.values.length : 0, camera: widget ? cameraState() : null, errors: tileErrors,
+        lighting: lighting, daily: !!overlays.daily, dailyShown: !!(dailyLayer && dailyLayer.show),
+        nightShown: !!(nightLayer && nightLayer.show), rotating: rotating, quality: currentQuality,
+        layers: widget ? widget.imageryLayers.length : 0
+      };
+    },
     _widget: function () { return widget; }
   };
   window.addEventListener('message', function (e) {
@@ -631,8 +903,13 @@
 
       housesDs = new Cesium.CustomDataSource('houses');
       widget.dataSources.add(housesDs);
+      featuredDs = new Cesium.CustomDataSource('featured');
+      widget.dataSources.add(featuredDs);
       setupClustering();
       setupPicking();
+      setupIdleTracking();
+      setupPerfProbe();
+      overlays.daily = params.get('daily') === '1';
 
       applyMode(currentMode);
       camera.setView({ destination: Cesium.Cartesian3.fromDegrees(51.39, 30.0, 2.0e7) });

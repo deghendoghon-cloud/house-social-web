@@ -39,7 +39,12 @@
       "url": "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}",
       "maxLevel": 16,
       "minTerrainLevel": 11,
-      "rectangle": [-125.0, 24.0, -66.5, 49.5],
+      "rectangle": [
+        -125.0,
+        24.0,
+        -66.5,
+        49.5
+      ],
       "resolution": "~1 m/px (USDA NAIP, contiguous USA only)",
       "credit": "Imagery: USGS The National Map / USDA NAIP",
       "license": "US public domain (acknowledgement requested)",
@@ -51,7 +56,12 @@
       "url": "https://maps.six.nsw.gov.au/arcgis/rest/services/public/NSW_Imagery/MapServer/tile/{z}/{y}/{x}",
       "maxLevel": 19,
       "minTerrainLevel": 11,
-      "rectangle": [140.9, -37.6, 153.7, -28.1],
+      "rectangle": [
+        140.9,
+        -37.6,
+        153.7,
+        -28.1
+      ],
       "resolution": "~0.1-0.5 m/px in cities (New South Wales, Australia only)",
       "credit": "Imagery: &copy; State of New South Wales (Spatial Services, DCS)",
       "license": "CC BY (data.nsw.gov.au lists CC BY 3.0/4.0; service is no longer updated). Verify before production.",
@@ -66,7 +76,8 @@
       "credit": "&copy; <a href=\"https://www.openstreetmap.org/copyright\" target=\"_blank\">OpenStreetMap</a> contributors",
       "license": "Data ODbL. tile.openstreetmap.org is for light/dev use only (tile usage policy). Production: self-host or licensed provider.",
       "commercial": "dev-only",
-      "proxy": true
+      "proxy": true,
+      "offline": false
     },
     "aws_terrarium": {
       "type": "terrarium",
@@ -77,26 +88,89 @@
       "license": "Source-dependent, attribution only (github.com/tilezen/joerd/blob/master/docs/attribution.md)",
       "commercial": "yes",
       "proxy": true
+    },
+    "gibs_night_lights": {
+      "type": "xyz",
+      "url": "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_Black_Marble/default/2016-01-01/GoogleMapsCompatible_Level8/{z}/{y}/{x}.png",
+      "maxLevel": 8,
+      "resolution": "~500 m/px (VIIRS Black Marble 2016 annual composite)",
+      "credit": "Night lights: NASA Earth Observatory / GIBS (VIIRS Black Marble 2016)",
+      "license": "NASA open data (no copyright; acknowledgement requested)",
+      "commercial": "yes",
+      "proxy": true,
+      "role": "night"
+    },
+    "gibs_daily_truecolor": {
+      "type": "xyz",
+      "url": "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_SNPP_CorrectedReflectance_TrueColor/default/{date}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg",
+      "maxLevel": 9,
+      "dateLagHours": 36,
+      "resolution": "~250-500 m/px, daily (VIIRS Suomi NPP true colour; swath gaps near the equator)",
+      "credit": "Daily imagery: NASA GIBS / VIIRS SNPP Corrected Reflectance",
+      "license": "NASA open data (no copyright; acknowledgement requested)",
+      "commercial": "yes",
+      "proxy": true,
+      "role": "daily",
+      "offline": false
     }
   },
   "modes": {
     "satellite": {
-      "imagery": ["natural_earth_local", "gibs_blue_marble", "s2_cloudless_2016", "usgs_naip_us", "nsw_imagery_au"],
+      "imagery": [
+        "natural_earth_local",
+        "gibs_blue_marble",
+        "s2_cloudless_2016",
+        "usgs_naip_us",
+        "nsw_imagery_au"
+      ],
       "terrain": null
     },
     "street": {
-      "imagery": ["natural_earth_local", "osm_standard"],
+      "imagery": [
+        "natural_earth_local",
+        "osm_standard"
+      ],
       "terrain": null
     },
     "terrain": {
-      "imagery": ["natural_earth_local", "gibs_blue_marble", "s2_cloudless_2016", "usgs_naip_us", "nsw_imagery_au"],
+      "imagery": [
+        "natural_earth_local",
+        "gibs_blue_marble",
+        "s2_cloudless_2016",
+        "usgs_naip_us",
+        "nsw_imagery_au"
+      ],
       "terrain": "aws_terrarium",
       "exaggeration": 1.5
     }
   },
   "overlays": {
-    "borders": { "type": "geojson-lines", "url": "data/borders.json", "credit": "Borders: Natural Earth (public domain)" },
-    "places": { "type": "places", "url": "data/places.json", "credit": "Place names: Natural Earth (public domain)" },
-    "streets": { "type": "xyz-overlay", "source": null, "_comment": "Transparent roads/labels raster for 'hybrid' view. No free key-less global provider exists; point this to a self-hosted overlay later." }
+    "borders": {
+      "type": "geojson-lines",
+      "url": "data/borders.json",
+      "credit": "Borders: Natural Earth (public domain)"
+    },
+    "places": {
+      "type": "places",
+      "url": "data/places.json",
+      "credit": "Place names: Natural Earth (public domain)"
+    },
+    "streets": {
+      "type": "xyz-overlay",
+      "source": null,
+      "_comment": "Transparent roads/labels raster for 'hybrid' view. No free key-less global provider exists; point this to a self-hosted overlay later."
+    },
+    "daily": {
+      "source": "gibs_daily_truecolor",
+      "minHeight": 300000.0,
+      "alpha": 0.85
+    }
+  },
+  "lighting": {
+    "night": "gibs_night_lights",
+    "fadeOutHeight": 1500000.0,
+    "fadeInHeight": 4000000.0,
+    "lightsMinHeight": 1200000.0,
+    "lightsBrightness": 2.5
   }
 }
