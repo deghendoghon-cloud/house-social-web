@@ -14,6 +14,12 @@ let selectable = new Map();
 let selectedId = null;
 let ready = false;
 let lastSceneKey = '';
+let editMode = false;
+let dragTarget = null;
+let dragOffset = new THREE.Vector3();
+let dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+let pointerDownPos = null;
+
 
 const PALETTE = {
   floor: 0xc49a6c,
@@ -222,6 +228,8 @@ function buildFurniture(node) {
   g.userData.sourceId = node.sourceId;
   g.userData.name = node.name || node.id;
   g.userData.kind = node.kind;
+  g.userData.layoutW = (node.meta && node.meta.layoutW) || node.w || 80;
+  g.userData.layoutH = (node.meta && node.meta.layoutH) || node.d || 56;
   selectable.set(node.id, g);
   return g;
 }
@@ -347,6 +355,7 @@ function buildScene(data) {
     n: (data.nodes || []).length,
     w: data.width,
     d: data.depth,
+    v: data.version || 0,
   });
   if (key === lastSceneKey && roomRoot) {
     postToFlutter({ type: 'ready', roomId: data.roomId || data.hallId });
@@ -416,37 +425,124 @@ function init() {
 
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
-    function onPointer(ev) {
-      if (!ready) return;
+    const _hit = new THREE.Vector3();
+
+    function eventToNDC(ev) {
       const rect = canvas.getBoundingClientRect();
-      const cx =
-        (ev.clientX != null
-          ? ev.clientX
-          : ev.changedTouches && ev.changedTouches[0].clientX) - rect.left;
-      const cy =
-        (ev.clientY != null
-          ? ev.clientY
-          : ev.changedTouches && ev.changedTouches[0].clientY) - rect.top;
-      if (!rect.width || !rect.height) return;
-      pointer.x = (cx / rect.width) * 2 - 1;
-      pointer.y = -(cy / rect.height) * 2 + 1;
+      const src = ev.changedTouches ? ev.changedTouches[0] : ev.touches ? ev.touches[0] : ev;
+      const cx = src.clientX - rect.left;
+      const cy = src.clientY - rect.top;
+      if (!rect.width || !rect.height) return null;
+      return {
+        x: (cx / rect.width) * 2 - 1,
+        y: -(cy / rect.height) * 2 + 1,
+        clientX: src.clientX,
+        clientY: src.clientY,
+      };
+    }
+
+    function pickSelectable(ndc) {
+      pointer.x = ndc.x;
+      pointer.y = ndc.y;
       raycaster.setFromCamera(pointer, camera);
       const hits = raycaster.intersectObjects([...selectable.values()], true);
-      if (hits.length) {
-        let obj = hits[0].object;
-        while (obj && !obj.userData.nodeId && obj.parent) obj = obj.parent;
-        if (!obj || !obj.userData.nodeId) return;
-        selectNode(obj.userData.nodeId);
-        postToFlutter({
-          type: 'select',
-          nodeId: obj.userData.nodeId,
-          sourceId: obj.userData.sourceId,
-          name: obj.userData.name,
-          kind: obj.userData.kind,
-        });
-      }
+      if (!hits.length) return null;
+      let obj = hits[0].object;
+      while (obj && !obj.userData.nodeId && obj.parent) obj = obj.parent;
+      return obj && obj.userData.nodeId ? obj : null;
     }
-    canvas.addEventListener('click', onPointer);
+
+    function onPointerDown(ev) {
+      if (!ready) return;
+      const ndc = eventToNDC(ev);
+      if (!ndc) return;
+      pointerDownPos = { x: ndc.clientX, y: ndc.clientY };
+      if (!editMode) return;
+      const obj = pickSelectable(ndc);
+      if (!obj || !obj.userData.sourceId) return;
+      // فقط مبلمان/content قابل کشیدن
+      const k = obj.userData.kind;
+      if (k === 'roomShell' || k === 'roomFloor') return;
+      dragTarget = obj;
+      // نقطهٔ برخورد با صفحهٔ کف
+      pointer.x = ndc.x;
+      pointer.y = ndc.y;
+      raycaster.setFromCamera(pointer, camera);
+      if (raycaster.ray.intersectPlane(dragPlane, _hit)) {
+        dragOffset.copy(dragTarget.position).sub(_hit);
+      } else {
+        dragOffset.set(0, 0, 0);
+      }
+      controls.enabled = false;
+      selectNode(obj.userData.nodeId);
+      ev.preventDefault();
+    }
+
+    function onPointerMove(ev) {
+      if (!dragTarget || !editMode) return;
+      const ndc = eventToNDC(ev);
+      if (!ndc) return;
+      pointer.x = ndc.x;
+      pointer.y = ndc.y;
+      raycaster.setFromCamera(pointer, camera);
+      if (raycaster.ray.intersectPlane(dragPlane, _hit)) {
+        dragTarget.position.x = _hit.x + dragOffset.x;
+        dragTarget.position.z = _hit.z + dragOffset.z;
+        // y را از ارتفاع قبلی حفظ نکن — group از y=0 ساخته شده
+      }
+      ev.preventDefault();
+    }
+
+    function onPointerUp(ev) {
+      if (dragTarget && editMode) {
+        const obj = dragTarget;
+        const meta = obj.userData;
+        // center → layout top-left
+        const lw = meta.layoutW || (obj.userData._w) || 80;
+        const lh = meta.layoutH || (obj.userData._h) || 56;
+        // از meta گره — در buildFurniture ذخیره می‌کنیم
+        const layoutW = obj.userData.layoutW || 80;
+        const layoutH = obj.userData.layoutH || 56;
+        const layoutX = obj.position.x - layoutW / 2;
+        const layoutY = obj.position.z - layoutH / 2;
+        postToFlutter({
+          type: 'itemMoved',
+          sourceId: meta.sourceId,
+          nodeId: meta.nodeId,
+          layoutX: layoutX,
+          layoutY: layoutY,
+        });
+        dragTarget = null;
+        controls.enabled = true;
+        ev.preventDefault();
+        return;
+      }
+      dragTarget = null;
+      controls.enabled = true;
+
+      // کلیک ساده برای انتخاب
+      if (!pointerDownPos) return;
+      const ndc = eventToNDC(ev);
+      if (!ndc) return;
+      const dist = Math.hypot(ndc.clientX - pointerDownPos.x, ndc.clientY - pointerDownPos.y);
+      pointerDownPos = null;
+      if (dist > 8) return;
+      const obj = pickSelectable(ndc);
+      if (!obj) return;
+      selectNode(obj.userData.nodeId);
+      postToFlutter({
+        type: 'select',
+        nodeId: obj.userData.nodeId,
+        sourceId: obj.userData.sourceId,
+        name: obj.userData.name,
+        kind: obj.userData.kind,
+      });
+    }
+
+    canvas.addEventListener('pointerdown', onPointerDown);
+    canvas.addEventListener('pointermove', onPointerMove);
+    canvas.addEventListener('pointerup', onPointerUp);
+    canvas.addEventListener('pointercancel', onPointerUp);
 
     window.addEventListener('resize', () => {
       const w = Math.max(window.innerWidth, 1);
@@ -523,6 +619,16 @@ window.InteriorEngine = {
       level === 'low' ? 1 : Math.min(window.devicePixelRatio || 1, level === 'high' ? 2 : 1.5);
     renderer.setPixelRatio(pr);
   },
+  setEditMode(enabled) {
+    editMode = !!enabled;
+    dragTarget = null;
+    if (controls) controls.enabled = true;
+    setHud(
+      editMode
+        ? 'حالت جابه‌جایی: وسیله را بکشید و رها کنید'
+        : ((lastSceneKey && 'از بالا · بکشید برای چرخش') || 'آماده')
+    );
+  },
 };
 
 window.addEventListener('message', (ev) => {
@@ -543,6 +649,8 @@ window.addEventListener('message', (ev) => {
     window.InteriorEngine.select(msg.nodeId);
   } else if (msg.type === 'setQuality') {
     window.InteriorEngine.setQuality(msg.level || 'normal');
+  } else if (msg.type === 'setEditMode') {
+    window.InteriorEngine.setEditMode(!!msg.enabled);
   }
 });
 
