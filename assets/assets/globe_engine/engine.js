@@ -49,6 +49,7 @@
   var overlays = { borders: true, places: true };
   var housesDs = null;
   var featuredDs = null; // دفتر مرکزی و رویدادها: بدون خوشه‌بندی
+  var specialsDs = null; // مرحلهٔ ۳: مناسبت‌ها و هشدارهای مدیر (نقطه + دایرهٔ اختیاری)
   var bordersPrim = null;
   var placesBillboards = null;
   var placesData = null;
@@ -402,12 +403,13 @@
   var FONT = '600 13px Vazirmatn, Tahoma, "Noto Sans Arabic", sans-serif';
   var pinCache = new Map();
   var PIN_COLORS = { mine: '#FFC107', shop: '#42A5F5', friend: '#F06292', house: '#4FC3F7', hq: '#7E57C2', event: '#FF7043' };
-  function pinImage(kind, selected, text, online, live) {
-    var key = kind + '|' + (selected ? 1 : 0) + '|' + (text || '') + '|' + (online ? 1 : 0) + '|' + (live ? 1 : 0);
+  function safeColor(c) { return typeof c === 'string' && /^#[0-9A-Fa-f]{6}$/.test(c) ? c : null; }
+  function pinImage(kind, selected, text, online, live, customColor, icon) {
+    var key = kind + '|' + (selected ? 1 : 0) + '|' + (text || '') + '|' + (online ? 1 : 0) + '|' + (live ? 1 : 0) + '|' + (customColor || '') + '|' + (icon || '');
     if (pinCache.has(key)) return pinCache.get(key);
-    var color = PIN_COLORS[kind] || PIN_COLORS.house;
+    var color = safeColor(customColor) || PIN_COLORS[kind] || PIN_COLORS.house;
     var dpr = Math.min(window.devicePixelRatio || 1, 3);
-    var big = kind === 'hq';
+    var big = kind === 'hq' || kind === 'special';
     var r = (selected ? 11 : 8) + (big ? 4 : 0);
     var halo = online ? 5 : 0;
     var tw = 0, measure = document.createElement('canvas').getContext('2d');
@@ -441,9 +443,11 @@
     }
     g.fillStyle = color; g.fill();
     g.lineWidth = selected ? 3 : 2; g.strokeStyle = selected ? '#fff' : 'rgba(255,255,255,.9)'; g.stroke();
-    if (kind === 'hq') {
+    if (kind === 'hq' || (kind === 'special' && icon === 'star')) {
       star(g, cx, cy, r * 0.62, r * 0.27);
       g.fillStyle = '#fff'; g.fill();
+    } else if (kind === 'special') {
+      specialGlyph(g, icon, cx, cy, r);
     } else if (kind === 'event') {
       g.fillStyle = '#fff'; g.fillRect(cx - r * 0.5, cy - r * 0.1, r, r * 0.55);
       g.fillRect(cx - r * 0.5, cy - r * 0.5, r, r * 0.22);
@@ -462,6 +466,22 @@
     var out = { canvas: c, w: w, h: h };
     pinCache.set(key, out);
     return out;
+  }
+  // نمادهای لایهٔ ویژه (با canvas، بدون فونت/ایموجی تا روی همهٔ دستگاه‌ها یکسان باشد)
+  function specialGlyph(g, icon, cx, cy, r) {
+    g.fillStyle = '#fff'; g.strokeStyle = '#fff';
+    if (icon === 'alert') {
+      g.beginPath(); g.moveTo(cx, cy - r * 0.62); g.lineTo(cx + r * 0.6, cy + r * 0.45); g.lineTo(cx - r * 0.6, cy + r * 0.45); g.closePath(); g.fill();
+      g.fillStyle = '#333';
+      g.fillRect(cx - r * 0.06, cy - r * 0.25, r * 0.12, r * 0.38);
+      g.fillRect(cx - r * 0.06, cy + r * 0.2, r * 0.12, r * 0.12);
+    } else if (icon === 'info') {
+      g.beginPath(); g.arc(cx, cy - r * 0.42, r * 0.14, 0, Math.PI * 2); g.fill();
+      g.fillRect(cx - r * 0.11, cy - r * 0.18, r * 0.22, r * 0.62);
+    } else { // flag
+      g.fillRect(cx - r * 0.42, cy - r * 0.55, r * 0.12, r * 1.1);
+      g.beginPath(); g.moveTo(cx - r * 0.3, cy - r * 0.55); g.lineTo(cx + r * 0.5, cy - r * 0.32); g.lineTo(cx - r * 0.3, cy - r * 0.08); g.closePath(); g.fill();
+    }
   }
   function star(g, cx, cy, ro, ri) {
     g.beginPath();
@@ -498,20 +518,21 @@
     return config.modes[currentMode].terrain ? Cesium.HeightReference.RELATIVE_TO_GROUND : Cesium.HeightReference.NONE;
   }
   function markerGraphics(d) {
-    var showText = (markerLabelMode || d.kind === 'hq') && d.title;
-    var img = pinImage(d.kind, d.id === selectedId, showText ? d.title : '', !!d.online, !!d.live);
+    var showText = (markerLabelMode || d.kind === 'hq' || d.kind === 'special') && d.title;
+    var img = pinImage(d.kind, d.id === selectedId, showText ? d.title : '', !!d.online, !!d.live, d.color, d.icon);
     return { image: img.canvas, width: img.w, height: img.h };
   }
   function setMarkers(list) {
     housesDs.entities.suspendEvents();
     featuredDs.entities.suspendEvents();
+    specialsDs.entities.suspendEvents();
     var seen = new Set();
     (list || []).forEach(function (d) {
       if (typeof d.lat !== 'number' || typeof d.lng !== 'number') return;
       seen.add(d.id);
       var pos = Cesium.Cartesian3.fromDegrees(d.lng, d.lat, 15);
       var g = markerGraphics(d);
-      var ds = d.layer === 'featured' ? featuredDs : housesDs;
+      var ds = d.layer === 'specials' ? specialsDs : (d.layer === 'featured' ? featuredDs : housesDs);
       var existing = markers.get(d.id);
       if (existing && existing.ds !== ds) {
         existing.ds.entities.remove(existing.entity); markers.delete(d.id); existing = null;
@@ -522,6 +543,7 @@
         existing.entity.billboard.image = g.image;
         existing.entity.billboard.width = g.width;
         existing.entity.billboard.height = g.height;
+        applyArea(existing.entity, d);
         return;
       }
       var e = ds.entities.add({
@@ -533,9 +555,10 @@
           heightReference: markerHeightReference(),
           scaleByDistance: new Cesium.NearFarScalar(2.0e3, 1.0, 1.5e7, 0.7),
           // نقاط ویژه کمی جلوتر از خانه‌ها رسم می‌شوند
-          eyeOffset: ds === featuredDs ? new Cesium.Cartesian3(0, 0, -50) : Cesium.Cartesian3.ZERO
+          eyeOffset: ds !== housesDs ? new Cesium.Cartesian3(0, 0, ds === specialsDs ? -80 : -50) : Cesium.Cartesian3.ZERO
         }
       });
+      applyArea(e, d);
       e.houseId = d.id;
       markers.set(d.id, { entity: e, data: d, ds: ds });
     });
@@ -544,8 +567,22 @@
     });
     housesDs.entities.resumeEvents();
     featuredDs.entities.resumeEvents();
+    specialsDs.entities.resumeEvents();
     scene.requestRender();
     post('markersApplied', { count: markers.size });
+  }
+  // دایرهٔ نیمه‌شفاف ناحیه (مثلاً منطقهٔ جنگی) برای موارد ویژه با شعاع > ۰.
+  // روی سطح زمین رسم می‌شود و کره را تخت نمی‌کند.
+  function applyArea(e, d) {
+    var rKm = d.kind === 'special' ? Number(d.radiusKm) || 0 : 0;
+    if (rKm <= 0) { if (e.ellipse) e.ellipse = undefined; return; }
+    var c = Cesium.Color.fromCssColorString(safeColor(d.color) || '#E53935');
+    var m = Math.min(rKm, 3000) * 1000;
+    e.ellipse = new Cesium.EllipseGraphics({
+      semiMajorAxis: m, semiMinorAxis: m,
+      material: c.withAlpha(0.22),
+      classificationType: Cesium.ClassificationType.TERRAIN
+    });
   }
   function refreshMarkerImages() {
     markers.forEach(function (m) {
@@ -704,7 +741,8 @@
       destination: Cesium.Cartesian3.fromDegrees(cmd.lng, cmd.lat, cmd.height || 4.5e4),
       orientation: {
         heading: Cesium.Math.toRadians(cmd.heading || 0),
-        pitch: Cesium.Math.toRadians(cmd.pitch != null ? cmd.pitch : -90),
+        // مرحلهٔ ۳.۱: همیشه نگاه عمود؛ pitch ذخیره‌شدهٔ قدیمی نادیده گرفته می‌شود
+        pitch: -Math.PI / 2,
         roll: 0
       }
     };
@@ -712,6 +750,23 @@
     if (cmd.durationMs === 0) camera.setView(opts);
     else camera.flyTo(Object.assign(opts, { duration: cmd.durationMs != null ? cmd.durationMs / 1000 : 2.0 }));
     scene.requestRender();
+  }
+
+  // ---------------------------------------------------------------- nadir lock
+  // اگر دوربین به هر دلیلی (اینرسی، flyTo قدیمی، رویداد ناشناخته) کج شده باشد،
+  // پیش از رسم فریم، بدون جابه‌جا کردن خود دوربین، دوباره عمود می‌شود.
+  // جهت شمال (heading) حفظ می‌شود. هنگام پرواز (flyTo) کاری نمی‌کند.
+  var NADIR_EPS = 1e-4; // رادیان (~۰٫۰۰۶ درجه)
+  var nadirFixes = 0;
+  function keepNadir() {
+    if (!camera || camera._currentFlight) return;
+    var pitch = camera.pitch;
+    if (Math.abs(pitch + Math.PI / 2) < NADIR_EPS && Math.abs(camera.roll) < NADIR_EPS) return;
+    camera.setView({
+      destination: camera.positionWC.clone(),
+      orientation: { heading: camera.heading, pitch: -Math.PI / 2, roll: 0 }
+    });
+    nadirFixes++;
   }
 
   function zoomBy(factor) {
@@ -726,7 +781,14 @@
   function setupPicking() {
     var handler = new Cesium.ScreenSpaceEventHandler(scene.canvas);
     handler.setInputAction(function (ev) {
-      var picked = scene.pick(ev.position);
+      // برچسب شهرها/مرزها ممکن است روی نشانگر یا دایرهٔ ناحیه باشند؛ از زیر آن‌ها
+      // اولین چیز قابل انتخاب (نشانگر، خوشه یا ناحیه) برداشته می‌شود.
+      var picked = null;
+      var hits = scene.drillPick(ev.position, 6);
+      for (var i = 0; i < hits.length; i++) {
+        var h = hits[i];
+        if (h && h.id && (Array.isArray(h.id) || h.id.houseId)) { picked = h; break; }
+      }
       if (picked && Array.isArray(picked.id)) {
         var ids = picked.id.map(function (e) { return e.houseId; }).filter(Boolean);
         handleClusterTap(ids, picked.id);
@@ -823,7 +885,7 @@
     // آزمایش: داده‌ها و موقعیت صفحهٔ نقاط (فقط خواندنی)
     _markers: function () {
       return Array.from(markers.values()).map(function (m) {
-        var d = Object.assign({}, m.data, { ds: m.ds === featuredDs ? 'featured' : 'houses' });
+        var d = Object.assign({}, m.data, { ds: m.ds === specialsDs ? 'specials' : (m.ds === featuredDs ? 'featured' : 'houses'), area: !!m.entity.ellipse });
         var p = m.entity.position && m.entity.position.getValue(widget.clock.currentTime);
         var w = p && Cesium.SceneTransforms.worldToWindowCoordinates(scene, p);
         if (w) { d.sx = w.x; d.sy = w.y; }
@@ -832,10 +894,11 @@
     },
     _state: function () {
       return {
-        mode: currentMode, markers: markers.size, featured: featuredDs ? featuredDs.entities.values.length : 0, camera: widget ? cameraState() : null, errors: tileErrors,
+        mode: currentMode, markers: markers.size, featured: featuredDs ? featuredDs.entities.values.length : 0, specials: specialsDs ? specialsDs.entities.values.filter(function (e) { return !!e.billboard; }).length : 0, camera: widget ? cameraState() : null, errors: tileErrors,
         lighting: lighting, daily: !!overlays.daily, dailyShown: !!(dailyLayer && dailyLayer.show),
         nightShown: !!(nightLayer && nightLayer.show), rotating: rotating, quality: currentQuality,
-        layers: widget ? widget.imageryLayers.length : 0
+        layers: widget ? widget.imageryLayers.length : 0,
+        nadirFixes: nadirFixes
       };
     },
     _widget: function () { return widget; }
@@ -897,6 +960,10 @@
       ctl.minimumZoomDistance = 150;      // ~ building level
       ctl.maximumZoomDistance = 3.0e7;    // whole globe
       ctl.enableLook = false;
+      // مرحلهٔ ۳.۱: مرکز زمین همیشه وسط صفحه. کج شدن دوربین (حرکت عمودی دو انگشت
+      // هنگام زوم) کره را به پایین صفحه می‌برد، پس tilt خاموش است و keepNadir
+      // هر کجی باقی‌مانده را برمی‌گرداند. چرخش دو انگشتی (جهت شمال) آزاد است.
+      ctl.enableTilt = false;
       ctl.inertiaSpin = 0.85; ctl.inertiaTranslate = 0.85; ctl.inertiaZoom = 0.6;
 
       setQuality(params.get('quality') || 'normal');
@@ -905,6 +972,8 @@
       widget.dataSources.add(housesDs);
       featuredDs = new Cesium.CustomDataSource('featured');
       widget.dataSources.add(featuredDs);
+      specialsDs = new Cesium.CustomDataSource('specials');
+      widget.dataSources.add(specialsDs);
       setupClustering();
       setupPicking();
       setupIdleTracking();
@@ -916,6 +985,7 @@
       camera.percentageChanged = 0.02;
       camera.changed.addEventListener(onCameraChanged);
       camera.moveEnd.addEventListener(onCameraChanged);
+      scene.preRender.addEventListener(keepNadir);
 
       scene.renderError.addEventListener(function (s, err) { fatal('render', err && err.message); });
       scene.canvas.addEventListener('webglcontextlost', function (e) { e.preventDefault(); post('fatal', { reason: 'context-lost' }); }, false);
