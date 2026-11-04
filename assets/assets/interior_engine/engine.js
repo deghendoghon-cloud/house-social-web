@@ -1,7 +1,5 @@
 /**
- * House Social — موتور فضای داخلی / سالن سه‌بعدی (Three.js)
- * دوربین پیش‌فرض از بالا (تقریباً عمود)، شیب تا حدود ۳۰ درجه نسبت به افق.
- * صحنه تا دستور بعدی کاربر ثابت می‌ماند (بازسازی فقط با loadScene).
+ * House Social Interior Engine — هندسهٔ بسته، مبلمان شکلی، دوربین از بالا
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -15,25 +13,15 @@ let roomRoot = null;
 let selectable = new Map();
 let selectedId = null;
 let ready = false;
-let sceneVersion = 0;
 let lastSceneKey = '';
 
-/** پالت متمایز برای تفکیک کف / دیوار / اتاق / وسیله */
 const PALETTE = {
-  floor: 0xc4a574,
+  floor: 0xc49a6c,
   floorEdge: 0x8d6e4a,
-  wall: 0xe8dcc8,
-  wallEdge: 0xa89070,
-  ceiling: 0xf0f0f0,
+  wall: 0xd7ccc8,
+  wallEdge: 0x8d7b6a,
   door: 0x5d4037,
-  roomShell: 0x90caf9,
-  roomShellEdge: 0x1565c0,
-  furniture: [
-    0xe57373, 0x64b5f6, 0x81c784, 0xffb74d, 0xba68c8,
-    0x4db6ac, 0xff8a65, 0xaed581, 0x7986cb, 0xf06292,
-  ],
-  content: 0x42a5f5,
-  hallFloor: 0xbcaaa4,
+  roomWall: 0xbcaaa4,
 };
 
 function showError(msg) {
@@ -77,238 +65,323 @@ function clearRoom() {
   selectedId = null;
 }
 
-function makeBox(w, h, d, color, opts = {}) {
+function mat(color, opts = {}) {
+  return new THREE.MeshStandardMaterial({
+    color,
+    roughness: opts.roughness ?? 0.8,
+    metalness: opts.metalness ?? 0.03,
+    transparent: !!opts.transparent,
+    opacity: opts.opacity ?? 1,
+  });
+}
+
+function boxMesh(w, h, d, color, opts = {}) {
   const geo = new THREE.BoxGeometry(
     Math.max(0.5, w || 1),
     Math.max(0.5, h || 1),
     Math.max(0.5, d || 1)
   );
-  const mat = new THREE.MeshStandardMaterial({
-    color,
-    roughness: opts.roughness ?? 0.82,
-    metalness: opts.metalness ?? 0.02,
-    transparent: !!opts.transparent,
-    opacity: opts.opacity ?? 1,
-    flatShading: false,
-  });
-  const mesh = new THREE.Mesh(geo, mat);
+  const mesh = new THREE.Mesh(geo, mat(color, opts));
   mesh.castShadow = opts.castShadow !== false;
   mesh.receiveShadow = opts.receiveShadow !== false;
-
-  // لبه برای تفکیک بصری
   if (opts.edges !== false) {
-    const edges = new THREE.EdgesGeometry(geo, 20);
-    const line = new THREE.LineSegments(
-      edges,
-      new THREE.LineBasicMaterial({
-        color: opts.edgeColor ?? 0x333333,
-        transparent: true,
-        opacity: 0.55,
-      })
+    const edges = new THREE.EdgesGeometry(geo, 25);
+    mesh.add(
+      new THREE.LineSegments(
+        edges,
+        new THREE.LineBasicMaterial({
+          color: opts.edgeColor ?? 0x333333,
+          transparent: true,
+          opacity: 0.45,
+        })
+      )
     );
-    mesh.add(line);
   }
   return mesh;
 }
 
-function furnitureColor(node, index) {
-  if (node.colorHex) return hexColor(node.colorHex);
-  if (node.kind === 'content') return PALETTE.content;
-  return PALETTE.furniture[index % PALETTE.furniture.length];
+/** مبلمان ترکیبی بر اساس kindKey */
+function buildFurniture(node) {
+  const kind = (node.meta && node.meta.kindKey) || '';
+  const c = hexColor(node.colorHex, 0xbcaaa4);
+  const g = new THREE.Group();
+  g.position.set(node.x, 0, node.z);
+  if (node.rotY) g.rotation.y = node.rotY;
+
+  const W = node.w || 40;
+  const H = node.h || 40;
+  const D = node.d || 40;
+
+  if (kind === 'bed') {
+    // قاب تخت
+    const frame = boxMesh(W, H * 0.35, D, c, { edgeColor: 0x4e342e });
+    frame.position.y = H * 0.2;
+    g.add(frame);
+    // تشک
+    const matress = boxMesh(W * 0.92, H * 0.22, D * 0.9, 0xf5f0e8, {
+      edgeColor: 0xbbb,
+    });
+    matress.position.y = H * 0.42;
+    g.add(matress);
+    // بالش
+    const pillow = boxMesh(W * 0.35, H * 0.12, D * 0.28, 0xfff8e1);
+    pillow.position.set(0, H * 0.55, -D * 0.28);
+    g.add(pillow);
+  } else if (kind === 'sofa') {
+    const seat = boxMesh(W, H * 0.35, D * 0.75, c);
+    seat.position.y = H * 0.25;
+    g.add(seat);
+    const back = boxMesh(W, H * 0.55, D * 0.18, c);
+    back.position.set(0, H * 0.55, -D * 0.35);
+    g.add(back);
+    const armL = boxMesh(W * 0.1, H * 0.4, D * 0.7, c);
+    armL.position.set(-W * 0.45, H * 0.35, 0);
+    g.add(armL);
+    const armR = boxMesh(W * 0.1, H * 0.4, D * 0.7, c);
+    armR.position.set(W * 0.45, H * 0.35, 0);
+    g.add(armR);
+  } else if (kind === 'chair') {
+    const seat = boxMesh(W, H * 0.12, D, c);
+    seat.position.y = H * 0.45;
+    g.add(seat);
+    const back = boxMesh(W, H * 0.4, D * 0.12, c);
+    back.position.set(0, H * 0.7, -D * 0.4);
+    g.add(back);
+    // پایه ساده
+    for (const [sx, sz] of [
+      [-0.35, -0.35],
+      [0.35, -0.35],
+      [-0.35, 0.35],
+      [0.35, 0.35],
+    ]) {
+      const leg = boxMesh(W * 0.08, H * 0.45, W * 0.08, 0x5d4037, { edges: false });
+      leg.position.set(W * sx, H * 0.22, D * sz);
+      g.add(leg);
+    }
+  } else if (kind === 'table' || kind === 'desk') {
+    const top = boxMesh(W, H * 0.1, D, c);
+    top.position.y = H * 0.92;
+    g.add(top);
+    for (const [sx, sz] of [
+      [-0.4, -0.4],
+      [0.4, -0.4],
+      [-0.4, 0.4],
+      [0.4, 0.4],
+    ]) {
+      const leg = boxMesh(W * 0.07, H * 0.88, W * 0.07, 0x4e342e, { edges: false });
+      leg.position.set(W * sx, H * 0.44, D * sz);
+      g.add(leg);
+    }
+  } else if (
+    kind === 'cabinet' ||
+    kind === 'wardrobe' ||
+    kind === 'bookshelf' ||
+    kind === 'shelf'
+  ) {
+    const body = boxMesh(W, H, D, c);
+    body.position.y = H / 2;
+    g.add(body);
+    // قفسه‌ها
+    for (let i = 1; i <= 3; i++) {
+      const shelf = boxMesh(W * 0.9, 2, D * 0.85, 0x3e2723, { edges: false });
+      shelf.position.y = (H * i) / 4;
+      g.add(shelf);
+    }
+  } else if (kind === 'tv') {
+    const screen = boxMesh(W, H * 0.85, Math.max(6, D), 0x111111);
+    screen.position.y = H / 2;
+    g.add(screen);
+    const bezel = boxMesh(W * 1.02, H * 0.9, Math.max(4, D * 0.6), 0x222222);
+    bezel.position.y = H / 2;
+    g.add(bezel);
+  } else if (kind === 'tv_stand') {
+    const body = boxMesh(W, H * 0.7, D, c);
+    body.position.y = H * 0.35;
+    g.add(body);
+  } else if (kind === 'plant') {
+    const pot = boxMesh(W * 0.7, H * 0.25, D * 0.7, 0xa1887f);
+    pot.position.y = H * 0.12;
+    g.add(pot);
+    const leaf = boxMesh(W * 0.9, H * 0.7, D * 0.9, 0x388e3c, {
+      edgeColor: 0x1b5e20,
+    });
+    leaf.position.y = H * 0.6;
+    g.add(leaf);
+  } else if (node.kind === 'content') {
+    const plate = boxMesh(W, Math.max(4, H), D, c, { edgeColor: 0x1565c0 });
+    plate.position.y = Math.max(4, H) / 2;
+    g.add(plate);
+  } else {
+    const body = boxMesh(W, H, D, c);
+    body.position.y = H / 2;
+    g.add(body);
+  }
+
+  g.userData.selectable = true;
+  g.userData.nodeId = node.id;
+  g.userData.sourceId = node.sourceId;
+  g.userData.name = node.name || node.id;
+  g.userData.kind = node.kind;
+  selectable.set(node.id, g);
+  return g;
 }
 
-function buildNode(node, parent, colorIndex) {
+function buildNode(node, parent) {
   const kind = node.kind;
-  let mesh = null;
-  let idx = colorIndex;
+  let obj = null;
+  const color = hexColor(node.colorHex);
 
   if (kind === 'floor') {
-    const c = hexColor(node.colorHex, PALETTE.floor);
-    mesh = makeBox(node.w, Math.max(node.h, 4), node.d, c, {
+    obj = boxMesh(node.w, Math.max(node.h, 2), node.d, hexColor(node.colorHex, PALETTE.floor), {
       castShadow: false,
       edgeColor: PALETTE.floorEdge,
     });
-    mesh.position.set(
-      node.x != null ? node.x : node.w / 2,
-      Math.max(node.h, 4) / 2,
-      node.z != null ? node.z : node.d / 2
-    );
-    mesh.receiveShadow = true;
+    obj.position.set(node.x, node.y != null ? node.y : 1, node.z);
+    obj.receiveShadow = true;
+    if (node.sourceId) {
+      obj.userData.selectable = true;
+      obj.userData.nodeId = node.id;
+      obj.userData.sourceId = node.sourceId;
+      obj.userData.name = node.name || node.id;
+      obj.userData.kind = 'roomFloor';
+      selectable.set(node.id, obj);
+    }
   } else if (kind === 'ceiling') {
-    mesh = makeBox(node.w, Math.max(node.h, 2), node.d, hexColor(node.colorHex, PALETTE.ceiling), {
+    obj = boxMesh(node.w, Math.max(node.h, 2), node.d, hexColor(node.colorHex, 0xf5f5f5), {
       castShadow: false,
       edges: false,
     });
-    mesh.position.set(
-      node.x != null ? node.x : node.w / 2,
-      node.y || 0,
-      node.z != null ? node.z : node.d / 2
-    );
-    mesh.visible = !!(node.meta && node.meta.showCeiling);
+    obj.position.set(node.x, node.y || 0, node.z);
+    obj.visible = !!(node.meta && node.meta.showCeiling);
   } else if (kind === 'wall') {
-    const c = hexColor(node.colorHex, PALETTE.wall);
-    mesh = makeBox(node.w, node.h, node.d, c, { edgeColor: PALETTE.wallEdge });
-    mesh.position.set(node.x, node.y, node.z);
+    obj = boxMesh(node.w, node.h, node.d, hexColor(node.colorHex, PALETTE.wall), {
+      edgeColor: PALETTE.wallEdge,
+    });
+    obj.position.set(node.x, node.y, node.z);
   } else if (kind === 'door') {
-    mesh = makeBox(node.w, node.h, node.d, hexColor(node.colorHex, PALETTE.door), {
+    obj = boxMesh(node.w, node.h, node.d, hexColor(node.colorHex, PALETTE.door), {
       roughness: 0.45,
       edgeColor: 0x3e2723,
     });
-    mesh.position.set(node.x, node.y, node.z);
+    obj.position.set(node.x, node.y, node.z);
   } else if (kind === 'roomShell') {
-    // پوستهٔ نیمه‌شفاف اتاق در نمای سالن
-    const c = hexColor(node.colorHex, PALETTE.roomShell);
-    mesh = makeBox(node.w, node.h, node.d, c, {
-      transparent: true,
-      opacity: 0.55,
-      edgeColor: PALETTE.roomShellEdge,
-      castShadow: false,
+    // دیوار کوتاه سالن — مات و قابل انتخاب
+    obj = boxMesh(node.w, node.h, node.d, hexColor(node.colorHex, PALETTE.roomWall), {
+      transparent: false,
+      opacity: 1,
+      edgeColor: 0x4e342e,
+      castShadow: true,
     });
-    mesh.position.set(node.x, node.y, node.z);
-    mesh.userData.selectable = true;
-    mesh.userData.nodeId = node.id;
-    mesh.userData.sourceId = node.sourceId;
-    mesh.userData.name = node.name || node.id;
-    mesh.userData.kind = 'roomShell';
-    selectable.set(node.id, mesh);
+    obj.position.set(node.x, node.y, node.z);
+    obj.userData.selectable = true;
+    obj.userData.nodeId = node.id;
+    obj.userData.sourceId = node.sourceId;
+    obj.userData.name = node.name || node.id;
+    obj.userData.kind = 'roomShell';
+    selectable.set(node.id, obj);
   } else if (kind === 'furniture' || kind === 'content') {
-    const c = furnitureColor(node, idx++);
-    mesh = makeBox(node.w, node.h, node.d, c, {
-      edgeColor: 0x222222,
-      roughness: kind === 'content' ? 0.5 : 0.75,
-    });
-    mesh.position.set(node.x, node.y, node.z);
-    if (node.rotY) mesh.rotation.y = node.rotY;
-    mesh.userData.selectable = true;
-    mesh.userData.nodeId = node.id;
-    mesh.userData.sourceId = node.sourceId;
-    mesh.userData.name = node.name || node.id;
-    selectable.set(node.id, mesh);
+    obj = buildFurniture(node);
   } else if (kind === 'imageOnWall') {
-    mesh = makeBox(node.w || 40, node.h || 30, 3, hexColor(node.colorHex, 0xffffff), {
-      edgeColor: 0x444444,
-    });
-    mesh.position.set(node.x, node.y, node.z);
-    if (node.rotY) mesh.rotation.y = node.rotY;
-    mesh.userData.selectable = true;
-    mesh.userData.nodeId = node.id;
-    mesh.userData.sourceId = node.sourceId;
-    mesh.userData.name = node.name || node.id;
-    selectable.set(node.id, mesh);
+    obj = boxMesh(node.w || 40, node.h || 30, 3, hexColor(node.colorHex, 0xffffff));
+    obj.position.set(node.x, node.y, node.z);
+    if (node.rotY) obj.rotation.y = node.rotY;
+    obj.userData.selectable = true;
+    obj.userData.nodeId = node.id;
+    obj.userData.sourceId = node.sourceId;
+    selectable.set(node.id, obj);
   } else {
-    mesh = makeBox(node.w || 20, node.h || 20, node.d || 20, hexColor(node.colorHex));
-    mesh.position.set(node.x || 0, node.y || 0, node.z || 0);
+    obj = boxMesh(node.w || 20, node.h || 20, node.d || 20, color);
+    obj.position.set(node.x || 0, node.y || 0, node.z || 0);
   }
 
-  if (mesh) {
-    mesh.userData.kind = kind;
-    parent.add(mesh);
+  if (obj) {
+    obj.userData.kind = obj.userData.kind || kind;
+    parent.add(obj);
   }
 
   if (node.children && node.children.length) {
-    for (const ch of node.children) {
-      idx = buildNode(ch, parent, idx);
-    }
+    for (const ch of node.children) buildNode(ch, parent);
   }
-  return idx;
 }
 
 function applyTopDownCamera(data) {
   const cam = data.camera || {};
-  const width = data.width || 400;
-  const depth = data.depth || 400;
-  const target = new THREE.Vector3(
-    cam.targetX != null ? cam.targetX : width / 2,
-    cam.targetY != null ? cam.targetY : 0,
-    cam.targetZ != null ? cam.targetZ : depth / 2
-  );
+  // مرکز هدف: از camera یا وسط صحنه
+  let tx = cam.targetX;
+  let ty = cam.targetY != null ? cam.targetY : 10;
+  let tz = cam.targetZ;
+  if (tx == null || tz == null) {
+    // محاسبه از گره‌های کف
+    tx = (data.width || 400) / 2;
+    tz = (data.depth || 400) / 2;
+  }
+  const target = new THREE.Vector3(tx, ty, tz);
   controls.target.copy(target);
 
-  // فاصله بر اساس اندازهٔ صحنه
-  const span = Math.max(width, depth);
-  const dist = cam.distance != null ? cam.distance : span * 1.15 + 80;
+  const span = Math.max(data.width || 400, data.depth || 400);
+  const dist = cam.distance != null ? cam.distance : span * 1.2 + 80;
   controls.minDistance = cam.minDistance != null ? cam.minDistance : span * 0.35;
   controls.maxDistance = cam.maxDistance != null ? cam.maxDistance : span * 2.8;
-
-  // از بالا تقریباً عمود؛ شیب تا حدود ۳۰ درجه نسبت به افق
-  // polar=0 → عمود از بالا؛ polar = 60° ≈ π/3 → زاویهٔ دید حدود ۳۰° نسبت به افق
-  const minP = cam.minPolar != null ? cam.minPolar : 0.08;
-  const maxP = cam.maxPolar != null ? cam.maxPolar : Math.PI / 3;
-  controls.minPolarAngle = minP;
-  controls.maxPolarAngle = maxP;
-  // چرخش افقی آزاد در سالن؛ در اتاق محدودتر اگر مشخص شده باشد
-  if (cam.minAzimuth != null) controls.minAzimuthAngle = cam.minAzimuth;
-  else controls.minAzimuthAngle = -Infinity;
-  if (cam.maxAzimuth != null) controls.maxAzimuthAngle = cam.maxAzimuth;
-  else controls.maxAzimuthAngle = Infinity;
-
+  controls.minPolarAngle = cam.minPolar != null ? cam.minPolar : 0.12;
+  controls.maxPolarAngle = cam.maxPolar != null ? cam.maxPolar : 1.05;
+  controls.minAzimuthAngle = -Infinity;
+  controls.maxAzimuthAngle = Infinity;
   controls.enablePan = true;
   controls.screenSpacePanning = true;
-  controls.panSpeed = 0.45;
-  controls.rotateSpeed = 0.4;
-  controls.zoomSpeed = 0.85;
+  controls.panSpeed = 0.5;
+  controls.rotateSpeed = 0.45;
+  controls.zoomSpeed = 0.9;
   controls.enableDamping = true;
-  controls.dampingFactor = 0.12;
+  controls.dampingFactor = 0.1;
 
-  // موقعیت اولیه: دقیقاً بالای مرکز
-  camera.position.set(target.x, target.y + dist, target.z + 0.01);
+  // از بالا
+  camera.position.set(target.x, target.y + dist, target.z + 0.5);
   controls.update();
 }
 
 function buildScene(data) {
   if (!scene || !camera || !controls) return;
 
-  // جلوگیری از بازسازی بی‌مورد با همان داده
   const key = JSON.stringify({
     id: data.roomId || data.hallId || data.name,
     n: (data.nodes || []).length,
     w: data.width,
     d: data.depth,
-    ver: data.version,
   });
   if (key === lastSceneKey && roomRoot) {
     postToFlutter({ type: 'ready', roomId: data.roomId || data.hallId });
     return;
   }
   lastSceneKey = key;
-  sceneVersion += 1;
 
   clearRoom();
   roomRoot = new THREE.Group();
   roomRoot.name = 'root_' + (data.roomId || data.hallId || 'x');
 
-  const nodes = data.nodes || [];
-  let colorIndex = 0;
-  for (const n of nodes) {
+  for (const n of data.nodes || []) {
     if (n.kind === 'ceiling') {
       n.meta = n.meta || {};
       n.meta.showCeiling = !!(data.camera && data.camera.showCeiling);
     }
-    colorIndex = buildNode(n, roomRoot, colorIndex);
+    buildNode(n, roomRoot);
   }
 
   scene.add(roomRoot);
 
-  // نور ملایم و ثابت
-  const amb = new THREE.AmbientLight(0xffffff, 0.65);
+  const amb = new THREE.AmbientLight(0xffffff, 0.7);
   roomRoot.add(amb);
-  const dir = new THREE.DirectionalLight(0xfff8e8, 0.75);
-  dir.position.set(
-    (data.width || 400) * 0.3,
-    (data.height || 280) * 1.5,
-    (data.depth || 400) * 0.25
-  );
+  const dir = new THREE.DirectionalLight(0xfff6e8, 0.8);
+  dir.position.set((data.width || 400) * 0.25, (data.height || 280) * 1.6, (data.depth || 400) * 0.2);
   dir.castShadow = true;
   dir.shadow.mapSize.set(1024, 1024);
   roomRoot.add(dir);
-  const fill = new THREE.DirectionalLight(0xd0e0ff, 0.3);
-  fill.position.set(-(data.width || 400) * 0.4, (data.height || 280) * 0.8, -(data.depth || 400) * 0.3);
+  const fill = new THREE.DirectionalLight(0xd0e4ff, 0.28);
+  fill.position.set(-(data.width || 400) * 0.4, (data.height || 280) * 0.7, -(data.depth || 400) * 0.3);
   roomRoot.add(fill);
 
   applyTopDownCamera(data);
 
-  const label = data.name || (data.hallId ? 'سالن' : 'اتاق');
-  setHud(label + ' · از بالا · بکشید برای چرخش · دو انگشت زوم');
+  setHud((data.name || 'فضا') + ' · از بالا · بکشید برای چرخش · دو انگشت زوم');
   ready = true;
   postToFlutter({ type: 'ready', roomId: data.roomId || data.hallId });
 }
@@ -332,22 +405,28 @@ function init() {
     scene.background = new THREE.Color(0x2a2a32);
 
     camera = new THREE.PerspectiveCamera(
-      45,
+      42,
       Math.max(window.innerWidth, 1) / Math.max(window.innerHeight, 1),
       2,
       8000
     );
     controls = new OrbitControls(camera, canvas);
     controls.enableDamping = true;
-    controls.dampingFactor = 0.12;
+    controls.dampingFactor = 0.1;
 
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
     function onPointer(ev) {
       if (!ready) return;
       const rect = canvas.getBoundingClientRect();
-      const cx = (ev.clientX != null ? ev.clientX : (ev.changedTouches && ev.changedTouches[0].clientX)) - rect.left;
-      const cy = (ev.clientY != null ? ev.clientY : (ev.changedTouches && ev.changedTouches[0].clientY)) - rect.top;
+      const cx =
+        (ev.clientX != null
+          ? ev.clientX
+          : ev.changedTouches && ev.changedTouches[0].clientX) - rect.left;
+      const cy =
+        (ev.clientY != null
+          ? ev.clientY
+          : ev.changedTouches && ev.changedTouches[0].clientY) - rect.top;
       if (!rect.width || !rect.height) return;
       pointer.x = (cx / rect.width) * 2 - 1;
       pointer.y = -(cy / rect.height) * 2 + 1;
@@ -394,12 +473,16 @@ function init() {
 function selectNode(id) {
   if (selectedId && selectable.has(selectedId)) {
     const prev = selectable.get(selectedId);
-    if (prev.material && prev.material.emissive) prev.material.emissive.setHex(0x000000);
+    prev.traverse((c) => {
+      if (c.material && c.material.emissive) c.material.emissive.setHex(0x000000);
+    });
   }
   selectedId = id;
   if (id && selectable.has(id)) {
     const m = selectable.get(id);
-    if (m.material && m.material.emissive) m.material.emissive.setHex(0x1565c0);
+    m.traverse((c) => {
+      if (c.material && c.material.emissive) c.material.emissive.setHex(0x1565c0);
+    });
     setHud('انتخاب: ' + (m.userData.name || id));
   }
 }
@@ -414,7 +497,10 @@ function postToFlutter(msg) {
   } catch (_) {}
   try {
     if (window.parent && window.parent !== window) {
-      window.parent.postMessage(JSON.stringify({ source: 'interior_engine', ...msg }), '*');
+      window.parent.postMessage(
+        JSON.stringify({ source: 'interior_engine', ...msg }),
+        '*'
+      );
     }
   } catch (_) {}
 }
@@ -437,26 +523,17 @@ window.InteriorEngine = {
       level === 'low' ? 1 : Math.min(window.devicePixelRatio || 1, level === 'high' ? 2 : 1.5);
     renderer.setPixelRatio(pr);
   },
-  resetCamera() {
-    if (lastSceneKey) {
-      // فقط دوربین را به حالت از بالا برگردان؛ صحنه را خراب نکن
-      try {
-        const data = JSON.parse(lastSceneKey);
-        // lastSceneKey فشرده است؛ از target فعلی controls استفاده می‌کنیم
-        const t = controls.target.clone();
-        const dist = camera.position.distanceTo(t) || 400;
-        camera.position.set(t.x, t.y + dist, t.z + 0.01);
-        controls.update();
-      } catch (_) {}
-    }
-  },
 };
 
 window.addEventListener('message', (ev) => {
   let d = ev.data;
   if (!d) return;
   if (typeof d === 'string') {
-    try { d = JSON.parse(d); } catch (_) { return; }
+    try {
+      d = JSON.parse(d);
+    } catch (_) {
+      return;
+    }
   }
   if (!d || d.source === 'interior_engine') return;
   const msg = d.payload && typeof d.payload === 'object' ? d.payload : d;
@@ -466,8 +543,6 @@ window.addEventListener('message', (ev) => {
     window.InteriorEngine.select(msg.nodeId);
   } else if (msg.type === 'setQuality') {
     window.InteriorEngine.setQuality(msg.level || 'normal');
-  } else if (msg.type === 'resetCamera') {
-    window.InteriorEngine.resetCamera();
   }
 });
 
