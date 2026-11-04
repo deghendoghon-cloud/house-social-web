@@ -3,6 +3,7 @@
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 
 const canvas = document.getElementById('c');
 const hud = document.getElementById('hud');
@@ -22,13 +23,17 @@ let pointerDownPos = null;
 
 
 const PALETTE = {
-  floor: 0xc49a6c,
-  floorEdge: 0x8d6e4a,
-  wall: 0xd7ccc8,
-  wallEdge: 0x8d7b6a,
-  door: 0x5d4037,
-  roomWall: 0xbcaaa4,
+  floor: 0xc4a574,
+  floorEdge: 0x8d7355,
+  wall: 0xe8e0d5,
+  wallEdge: 0xb8a990,
+  door: 0x6d4c41,
+  roomWall: 0xd5c8b8,
+  bg: 0x1e2228,
 };
+
+// کش بافت‌های رویه‌ای (بدون فایل خارجی)
+const _texCache = new Map();
 
 function showError(msg) {
   if (errEl) {
@@ -55,8 +60,11 @@ function disposeObject(obj) {
   obj.traverse((c) => {
     if (c.geometry) c.geometry.dispose();
     if (c.material) {
-      if (Array.isArray(c.material)) c.material.forEach((m) => m.dispose());
-      else c.material.dispose();
+      const mats = Array.isArray(c.material) ? c.material : [c.material];
+      for (const m of mats) {
+        if (m.map && m.map.__hsOwned) m.map.dispose();
+        m.dispose();
+      }
     }
   });
 }
@@ -71,37 +79,200 @@ function clearRoom() {
   selectedId = null;
 }
 
-function mat(color, opts = {}) {
-  return new THREE.MeshStandardMaterial({
-    color,
-    roughness: opts.roughness ?? 0.8,
-    metalness: opts.metalness ?? 0.03,
-    transparent: !!opts.transparent,
-    opacity: opts.opacity ?? 1,
-  });
+/** بافت چوب کف — راه‌راه‌های گرم */
+function makeWoodTexture(seed = 1) {
+  const key = 'wood_' + seed;
+  if (_texCache.has(key)) return _texCache.get(key);
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 256;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#c4a574';
+  ctx.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 28; i++) {
+    const y = (i / 28) * 256 + (Math.sin(i * 1.7 + seed) * 3);
+    const a = 0.08 + (i % 3) * 0.03;
+    ctx.strokeStyle = `rgba(90,60,35,${a})`;
+    ctx.lineWidth = 2 + (i % 4);
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    for (let x = 0; x <= 256; x += 16) {
+      ctx.lineTo(x, y + Math.sin(x * 0.04 + i) * 2.5);
+    }
+    ctx.stroke();
+  }
+  // گره‌های چوب
+  for (let k = 0; k < 6; k++) {
+    const x = ((k * 97 + seed * 13) % 220) + 18;
+    const y = ((k * 53 + seed * 7) % 220) + 18;
+    const g = ctx.createRadialGradient(x, y, 1, x, y, 10 + (k % 4));
+    g.addColorStop(0, 'rgba(110,75,40,0.35)');
+    g.addColorStop(1, 'rgba(110,75,40,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.ellipse(x, y, 12, 6, k, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace || THREE.sRGBEncoding;
+  tex.__hsOwned = true;
+  _texCache.set(key, tex);
+  return tex;
 }
 
+/** بافت دیوار — گچ مات با نویز خیلی ملایم */
+function makePlasterTexture(seed = 1) {
+  const key = 'plaster_' + seed;
+  if (_texCache.has(key)) return _texCache.get(key);
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 128;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#e8e0d5';
+  ctx.fillRect(0, 0, 128, 128);
+  const img = ctx.getImageData(0, 0, 128, 128);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const n = (Math.random() - 0.5) * 14;
+    img.data[i] = Math.min(255, Math.max(0, img.data[i] + n));
+    img.data[i + 1] = Math.min(255, Math.max(0, img.data[i + 1] + n * 0.95));
+    img.data[i + 2] = Math.min(255, Math.max(0, img.data[i + 2] + n * 0.9));
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace || THREE.sRGBEncoding;
+  tex.__hsOwned = true;
+  _texCache.set(key, tex);
+  return tex;
+}
+
+/** بافت پارچه مبل */
+function makeFabricTexture(baseHex = '#6d4c41') {
+  const key = 'fabric_' + baseHex;
+  if (_texCache.has(key)) return _texCache.get(key);
+  const c = document.createElement('canvas');
+  c.width = 64;
+  c.height = 64;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = baseHex;
+  ctx.fillRect(0, 0, 64, 64);
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  for (let i = 0; i < 64; i += 4) {
+    ctx.beginPath();
+    ctx.moveTo(i, 0);
+    ctx.lineTo(i, 64);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, i);
+    ctx.lineTo(64, i);
+    ctx.stroke();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace || THREE.sRGBEncoding;
+  tex.__hsOwned = true;
+  _texCache.set(key, tex);
+  return tex;
+}
+
+function mat(color, opts = {}) {
+  const m = new THREE.MeshStandardMaterial({
+    color,
+    roughness: opts.roughness ?? 0.75,
+    metalness: opts.metalness ?? 0.02,
+    transparent: !!opts.transparent,
+    opacity: opts.opacity ?? 1,
+    map: opts.map || null,
+    envMapIntensity: opts.envMapIntensity ?? 0.4,
+  });
+  if (opts.map) {
+    // رنگ پایه را نزدیک سفید نگه می‌داریم تا بافت دیده شود
+    if (opts.tintMap) m.color.setHex(0xffffff);
+  }
+  return m;
+}
+
+function radiusFor(w, h, d, requested) {
+  const m = Math.min(w, h, d);
+  if (m < 4) return 0;
+  const r = requested != null ? requested : Math.min(6, m * 0.12);
+  return Math.max(0.5, Math.min(r, m * 0.28));
+}
+
+/**
+ * جعبه با گوشه گرد (یا ساده برای اجسام خیلی کوچک).
+ * opts.round — شعاع گردی؛ 0 = تیز
+ * opts.edges — خطوط لبه (پیش‌فرض خاموش برای ظاهر نرم‌تر)
+ */
 function boxMesh(w, h, d, color, opts = {}) {
-  const geo = new THREE.BoxGeometry(
-    Math.max(0.5, w || 1),
-    Math.max(0.5, h || 1),
-    Math.max(0.5, d || 1)
-  );
+  w = Math.max(0.5, w || 1);
+  h = Math.max(0.5, h || 1);
+  d = Math.max(0.5, d || 1);
+  const round = opts.round === false ? 0 : radiusFor(w, h, d, opts.round);
+  let geo;
+  if (round > 0.4 && RoundedBoxGeometry) {
+    const seg = opts.segments != null ? opts.segments : 3;
+    geo = new RoundedBoxGeometry(w, h, d, seg, round);
+  } else {
+    geo = new THREE.BoxGeometry(w, h, d);
+  }
   const mesh = new THREE.Mesh(geo, mat(color, opts));
   mesh.castShadow = opts.castShadow !== false;
   mesh.receiveShadow = opts.receiveShadow !== false;
-  if (opts.edges !== false) {
-    const edges = new THREE.EdgesGeometry(geo, 25);
+  if (opts.edges === true) {
+    const edges = new THREE.EdgesGeometry(geo, 30);
     mesh.add(
       new THREE.LineSegments(
         edges,
         new THREE.LineBasicMaterial({
           color: opts.edgeColor ?? 0x333333,
           transparent: true,
-          opacity: 0.45,
+          opacity: opts.edgeOpacity ?? 0.22,
         })
       )
     );
+  }
+  return mesh;
+}
+
+function floorMesh(w, h, d, colorHex, opts = {}) {
+  const tex = makeWoodTexture(opts.seed || 1);
+  tex.repeat.set(Math.max(2, w / 180), Math.max(2, d / 180));
+  const mesh = boxMesh(w, Math.max(h, 3), d, hexColor(colorHex, PALETTE.floor), {
+    map: tex,
+    tintMap: true,
+    roughness: 0.82,
+    metalness: 0.0,
+    castShadow: false,
+    round: 1.2,
+    edges: false,
+    ...opts,
+  });
+  // کمی رنگ پایه چوب روی material
+  if (mesh.material) {
+    mesh.material.color.setHex(hexColor(colorHex, PALETTE.floor));
+    mesh.material.map = tex;
+  }
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+function wallMesh(w, h, d, colorHex, opts = {}) {
+  const tex = makePlasterTexture(opts.seed || 2);
+  tex.repeat.set(Math.max(1, w / 120), Math.max(1, h / 120));
+  const mesh = boxMesh(w, h, d, hexColor(colorHex, PALETTE.wall), {
+    map: tex,
+    roughness: 0.92,
+    metalness: 0.0,
+    round: opts.round != null ? opts.round : 2.5,
+    edges: false,
+    castShadow: opts.castShadow !== false,
+    ...opts,
+  });
+  if (mesh.material) {
+    mesh.material.color.setHex(hexColor(colorHex, PALETTE.wall));
+    mesh.material.map = tex;
   }
   return mesh;
 }
@@ -111,7 +282,9 @@ function buildFurniture(node) {
   const kind = (node.meta && node.meta.kindKey) || '';
   const c = hexColor(node.colorHex, 0xbcaaa4);
   const g = new THREE.Group();
-  g.position.set(node.x, 0, node.z);
+  // baseY از متا (مثلاً تلویزیون از ۴۰٪ دیوار شروع می‌شود)
+  const baseY = (node.meta && node.meta.baseY != null) ? node.meta.baseY : 0;
+  g.position.set(node.x, baseY, node.z);
   if (node.rotY) g.rotation.y = node.rotY;
 
   const W = node.w || 40;
@@ -119,54 +292,73 @@ function buildFurniture(node) {
   const D = node.d || 40;
 
   if (kind === 'bed') {
-    // قاب تخت
-    const frame = boxMesh(W, H * 0.35, D, c, { edgeColor: 0x4e342e });
-    frame.position.y = H * 0.2;
+    const frame = boxMesh(W, H * 0.4, D, c, { round: 5, edges: false, roughness: 0.7 });
+    frame.position.y = H * 0.22;
     g.add(frame);
-    // تشک
-    const matress = boxMesh(W * 0.92, H * 0.22, D * 0.9, 0xf5f0e8, {
-      edgeColor: 0xbbb,
+    const matress = boxMesh(W * 0.92, H * 0.28, D * 0.9, 0xf5f0e8, {
+      round: 8,
+      edges: false,
+      roughness: 0.9,
     });
-    matress.position.y = H * 0.42;
+    matress.position.y = H * 0.48;
     g.add(matress);
-    // بالش
-    const pillow = boxMesh(W * 0.35, H * 0.12, D * 0.28, 0xfff8e1);
-    pillow.position.set(0, H * 0.55, -D * 0.28);
+    const pillow = boxMesh(W * 0.38, H * 0.14, D * 0.28, 0xfff8e1, {
+      round: 6,
+      edges: false,
+      roughness: 0.95,
+    });
+    pillow.position.set(0, H * 0.62, -D * 0.28);
     g.add(pillow);
   } else if (kind === 'sofa') {
-    const seat = boxMesh(W, H * 0.35, D * 0.75, c);
-    seat.position.y = H * 0.25;
+    const fab = makeFabricTexture(
+      '#' + (typeof c === 'number' ? c.toString(16).padStart(6, '0') : '6d4c41')
+    );
+    const seat = boxMesh(W, H * 0.28, D * 0.78, c, {
+      round: 7,
+      edges: false,
+      map: fab,
+      roughness: 0.88,
+    });
+    seat.position.y = H * 0.28;
     g.add(seat);
-    const back = boxMesh(W, H * 0.55, D * 0.18, c);
-    back.position.set(0, H * 0.55, -D * 0.35);
+    const back = boxMesh(W, H * 0.55, D * 0.16, c, {
+      round: 6,
+      edges: false,
+      map: fab,
+      roughness: 0.88,
+    });
+    back.position.set(0, H * 0.62, -D * 0.38);
     g.add(back);
-    const armL = boxMesh(W * 0.1, H * 0.4, D * 0.7, c);
-    armL.position.set(-W * 0.45, H * 0.35, 0);
+    const armL = boxMesh(W * 0.1, H * 0.4, D * 0.72, c, { round: 5, edges: false, map: fab });
+    armL.position.set(-W * 0.45, H * 0.4, 0);
     g.add(armL);
-    const armR = boxMesh(W * 0.1, H * 0.4, D * 0.7, c);
-    armR.position.set(W * 0.45, H * 0.35, 0);
+    const armR = boxMesh(W * 0.1, H * 0.4, D * 0.72, c, { round: 5, edges: false, map: fab });
+    armR.position.set(W * 0.45, H * 0.4, 0);
     g.add(armR);
   } else if (kind === 'chair') {
-    const seat = boxMesh(W, H * 0.12, D, c);
-    seat.position.y = H * 0.45;
+    const seat = boxMesh(W, H * 0.1, D, c);
+    seat.position.y = H * 0.42;
     g.add(seat);
-    const back = boxMesh(W, H * 0.4, D * 0.12, c);
-    back.position.set(0, H * 0.7, -D * 0.4);
+    const back = boxMesh(W, H * 0.42, D * 0.12, c);
+    back.position.set(0, H * 0.72, -D * 0.4);
     g.add(back);
-    // پایه ساده
     for (const [sx, sz] of [
       [-0.35, -0.35],
       [0.35, -0.35],
       [-0.35, 0.35],
       [0.35, 0.35],
     ]) {
-      const leg = boxMesh(W * 0.08, H * 0.45, W * 0.08, 0x5d4037, { edges: false });
-      leg.position.set(W * sx, H * 0.22, D * sz);
+      const leg = boxMesh(W * 0.08, H * 0.42, W * 0.08, 0x5d4037, { edges: false });
+      leg.position.set(W * sx, H * 0.21, D * sz);
       g.add(leg);
     }
   } else if (kind === 'table' || kind === 'desk') {
-    const top = boxMesh(W, H * 0.1, D, c);
-    top.position.y = H * 0.92;
+    const top = boxMesh(W, Math.max(4, H * 0.06), D, c, {
+      round: 3,
+      edges: false,
+      roughness: 0.55,
+    });
+    top.position.y = H * 0.97;
     g.add(top);
     for (const [sx, sz] of [
       [-0.4, -0.4],
@@ -174,44 +366,69 @@ function buildFurniture(node) {
       [-0.4, 0.4],
       [0.4, 0.4],
     ]) {
-      const leg = boxMesh(W * 0.07, H * 0.88, W * 0.07, 0x4e342e, { edges: false });
-      leg.position.set(W * sx, H * 0.44, D * sz);
+      const leg = boxMesh(W * 0.07, H * 0.94, W * 0.07, 0x4e342e, {
+        edges: false,
+        round: 1.5,
+        roughness: 0.6,
+      });
+      leg.position.set(W * sx, H * 0.47, D * sz);
       g.add(leg);
     }
   } else if (
     kind === 'cabinet' ||
     kind === 'wardrobe' ||
     kind === 'bookshelf' ||
-    kind === 'shelf'
+    kind === 'shelf' ||
+    kind === 'fridge'
   ) {
-    const body = boxMesh(W, H, D, c);
+    const body = boxMesh(W, H, D, c, { round: 4, edges: false, roughness: 0.65 });
     body.position.y = H / 2;
     g.add(body);
-    // قفسه‌ها
     for (let i = 1; i <= 3; i++) {
-      const shelf = boxMesh(W * 0.9, 2, D * 0.85, 0x3e2723, { edges: false });
+      const shelf = boxMesh(W * 0.9, 2, D * 0.85, 0x3e2723, {
+        edges: false,
+        round: 1,
+      });
       shelf.position.y = (H * i) / 4;
       g.add(shelf);
     }
+    const handle = boxMesh(3, H * 0.12, 2, 0xcfd8dc, {
+      edges: false,
+      round: 1,
+      metalness: 0.55,
+      roughness: 0.35,
+    });
+    handle.position.set(W * 0.35, H * 0.5, D * 0.52);
+    g.add(handle);
   } else if (kind === 'tv') {
-    const screen = boxMesh(W, H * 0.85, Math.max(6, D), 0x111111);
-    screen.position.y = H / 2;
-    g.add(screen);
-    const bezel = boxMesh(W * 1.02, H * 0.9, Math.max(4, D * 0.6), 0x222222);
+    const bezel = boxMesh(W, H, Math.max(5, D), 0x1a1a1a, {
+      round: 3,
+      edges: false,
+      metalness: 0.35,
+      roughness: 0.4,
+    });
     bezel.position.y = H / 2;
     g.add(bezel);
+    const screen = boxMesh(W * 0.92, H * 0.88, Math.max(3, D * 0.5), 0x1565c0, {
+      round: 2,
+      edges: false,
+      metalness: 0.2,
+      roughness: 0.25,
+    });
+    screen.position.y = H / 2;
+    g.add(screen);
   } else if (kind === 'tv_stand') {
-    const body = boxMesh(W, H * 0.7, D, c);
-    body.position.y = H * 0.35;
+    const body = boxMesh(W, H * 0.75, D, c);
+    body.position.y = H * 0.38;
     g.add(body);
   } else if (kind === 'plant') {
-    const pot = boxMesh(W * 0.7, H * 0.25, D * 0.7, 0xa1887f);
-    pot.position.y = H * 0.12;
+    const pot = boxMesh(W * 0.7, H * 0.22, D * 0.7, 0xa1887f);
+    pot.position.y = H * 0.11;
     g.add(pot);
-    const leaf = boxMesh(W * 0.9, H * 0.7, D * 0.9, 0x388e3c, {
+    const leaf = boxMesh(W * 0.9, H * 0.72, D * 0.9, 0x388e3c, {
       edgeColor: 0x1b5e20,
     });
-    leaf.position.y = H * 0.6;
+    leaf.position.y = H * 0.58;
     g.add(leaf);
   } else if (node.kind === 'content') {
     const plate = boxMesh(W, Math.max(4, H), D, c, { edgeColor: 0x1565c0 });
@@ -234,18 +451,51 @@ function buildFurniture(node) {
   return g;
 }
 
+/** قاب عکس روی دیوار: حاشیه + صفحه */
+function buildWallImage(node) {
+  const g = new THREE.Group();
+  g.position.set(node.x, node.y, node.z);
+  if (node.rotY) g.rotation.y = node.rotY;
+  const W = node.w || 60;
+  const H = node.h || 50;
+  const frame = boxMesh(W * 1.1, H * 1.1, 5, 0x5d4037, {
+    round: 4,
+    edges: false,
+    roughness: 0.55,
+  });
+  g.add(frame);
+  const plate = boxMesh(W, H, 3, hexColor(node.colorHex, 0xfafafa), {
+    round: 2,
+    edges: false,
+    roughness: 0.9,
+  });
+  plate.position.z = 2;
+  g.add(plate);
+  const accent = boxMesh(W * 0.7, H * 0.08, 1, 0x90a4ae, {
+    edges: false,
+    round: 1,
+  });
+  accent.position.set(0, H * 0.25, 3);
+  g.add(accent);
+  g.userData.selectable = true;
+  g.userData.nodeId = node.id;
+  g.userData.sourceId = node.sourceId;
+  g.userData.name = node.name || node.id;
+  g.userData.kind = 'imageOnWall';
+  g.userData.layoutW = (node.meta && node.meta.layoutW) || W;
+  g.userData.layoutH = (node.meta && node.meta.layoutH) || H;
+  selectable.set(node.id, g);
+  return g;
+}
+
 function buildNode(node, parent) {
   const kind = node.kind;
   let obj = null;
   const color = hexColor(node.colorHex);
 
   if (kind === 'floor') {
-    obj = boxMesh(node.w, Math.max(node.h, 2), node.d, hexColor(node.colorHex, PALETTE.floor), {
-      castShadow: false,
-      edgeColor: PALETTE.floorEdge,
-    });
-    obj.position.set(node.x, node.y != null ? node.y : 1, node.z);
-    obj.receiveShadow = true;
+    obj = floorMesh(node.w, Math.max(node.h, 3), node.d, node.colorHex, { seed: 1 });
+    obj.position.set(node.x, node.y != null ? node.y : 1.5, node.z);
     if (node.sourceId) {
       obj.userData.selectable = true;
       obj.userData.nodeId = node.id;
@@ -255,29 +505,29 @@ function buildNode(node, parent) {
       selectable.set(node.id, obj);
     }
   } else if (kind === 'ceiling') {
-    obj = boxMesh(node.w, Math.max(node.h, 2), node.d, hexColor(node.colorHex, 0xf5f5f5), {
+    obj = boxMesh(node.w, Math.max(node.h, 2), node.d, hexColor(node.colorHex, 0xf7f4ef), {
       castShadow: false,
       edges: false,
+      round: 1,
+      roughness: 0.95,
     });
     obj.position.set(node.x, node.y || 0, node.z);
     obj.visible = !!(node.meta && node.meta.showCeiling);
   } else if (kind === 'wall') {
-    obj = boxMesh(node.w, node.h, node.d, hexColor(node.colorHex, PALETTE.wall), {
-      edgeColor: PALETTE.wallEdge,
-    });
+    obj = wallMesh(node.w, node.h, node.d, node.colorHex || '#E8E0D5', { seed: 2, round: 2 });
     obj.position.set(node.x, node.y, node.z);
   } else if (kind === 'door') {
     obj = boxMesh(node.w, node.h, node.d, hexColor(node.colorHex, PALETTE.door), {
-      roughness: 0.45,
-      edgeColor: 0x3e2723,
+      roughness: 0.55,
+      metalness: 0.05,
+      round: 4,
+      edges: false,
     });
     obj.position.set(node.x, node.y, node.z);
   } else if (kind === 'roomShell') {
-    // دیوار کوتاه سالن — مات و قابل انتخاب
-    obj = boxMesh(node.w, node.h, node.d, hexColor(node.colorHex, PALETTE.roomWall), {
-      transparent: false,
-      opacity: 1,
-      edgeColor: 0x4e342e,
+    obj = wallMesh(node.w, node.h, node.d, node.colorHex || '#D5C8B8', {
+      seed: 3,
+      round: 3,
       castShadow: true,
     });
     obj.position.set(node.x, node.y, node.z);
@@ -290,13 +540,7 @@ function buildNode(node, parent) {
   } else if (kind === 'furniture' || kind === 'content') {
     obj = buildFurniture(node);
   } else if (kind === 'imageOnWall') {
-    obj = boxMesh(node.w || 40, node.h || 30, 3, hexColor(node.colorHex, 0xffffff));
-    obj.position.set(node.x, node.y, node.z);
-    if (node.rotY) obj.rotation.y = node.rotY;
-    obj.userData.selectable = true;
-    obj.userData.nodeId = node.id;
-    obj.userData.sourceId = node.sourceId;
-    selectable.set(node.id, obj);
+    obj = buildWallImage(node);
   } else {
     obj = boxMesh(node.w || 20, node.h || 20, node.d || 20, color);
     obj.position.set(node.x || 0, node.y || 0, node.z || 0);
@@ -377,15 +621,27 @@ function buildScene(data) {
 
   scene.add(roomRoot);
 
-  const amb = new THREE.AmbientLight(0xffffff, 0.7);
+  // نورپردازی طبیعی‌تر: آسمان گرم + خورشید نرم + پرکننده
+  const hemi = new THREE.HemisphereLight(0xfff5e6, 0x8d8578, 0.55);
+  roomRoot.add(hemi);
+  const amb = new THREE.AmbientLight(0xfff8f0, 0.35);
   roomRoot.add(amb);
-  const dir = new THREE.DirectionalLight(0xfff6e8, 0.8);
-  dir.position.set((data.width || 400) * 0.25, (data.height || 280) * 1.6, (data.depth || 400) * 0.2);
+  const dir = new THREE.DirectionalLight(0xfff1d6, 0.85);
+  dir.position.set(
+    (data.width || 400) * 0.3,
+    (data.height || 280) * 1.8,
+    (data.depth || 400) * 0.25
+  );
   dir.castShadow = true;
   dir.shadow.mapSize.set(1024, 1024);
+  dir.shadow.bias = -0.00015;
   roomRoot.add(dir);
-  const fill = new THREE.DirectionalLight(0xd0e4ff, 0.28);
-  fill.position.set(-(data.width || 400) * 0.4, (data.height || 280) * 0.7, -(data.depth || 400) * 0.3);
+  const fill = new THREE.DirectionalLight(0xc5d8f0, 0.22);
+  fill.position.set(
+    -(data.width || 400) * 0.45,
+    (data.height || 280) * 0.75,
+    -(data.depth || 400) * 0.35
+  );
   roomRoot.add(fill);
 
   applyTopDownCamera(data);
@@ -409,9 +665,14 @@ function init() {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     if (THREE.SRGBColorSpace) renderer.outputColorSpace = THREE.SRGBColorSpace;
+    if (renderer.toneMapping != null) {
+      renderer.toneMapping = THREE.ACESFilmicToneMapping || renderer.toneMapping;
+      renderer.toneMappingExposure = 1.05;
+    }
 
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x2a2a32);
+    scene.background = new THREE.Color(PALETTE.bg);
+    scene.fog = new THREE.Fog(PALETTE.bg, 1800, 4200);
 
     camera = new THREE.PerspectiveCamera(
       42,
