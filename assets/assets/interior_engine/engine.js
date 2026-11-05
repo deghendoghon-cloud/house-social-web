@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 const canvas = document.getElementById('c');
 const hud = document.getElementById('hud');
@@ -12,6 +13,8 @@ const errEl = document.getElementById('err');
 let renderer, scene, camera, controls;
 let roomRoot = null;
 let selectable = new Map();
+const gltfLoader = new GLTFLoader();
+const gltfCache = new Map();
 let selectedId = null;
 let ready = false;
 let lastSceneKey = '';
@@ -209,6 +212,97 @@ function radiusFor(w, h, d, requested) {
  * opts.round — شعاع گردی؛ 0 = تیز
  * opts.edges — خطوط لبه (پیش‌فرض خاموش برای ظاهر نرم‌تر)
  */
+
+function isSolidKind(kind) {
+  return kind === 'furniture' || kind === 'room' || kind === 'solid';
+}
+
+function aabbOverlapXZ(ax, az, aw, ad, bx, bz, bw, bd) {
+  const eps = 1;
+  return ax < bx + bw - eps && ax + aw > bx + eps && az < bz + bd - eps && az + ad > bz + eps;
+}
+
+function findNestHost(obj) {
+  const meta = obj.userData || {};
+  if (meta.kind === 'furniture' || meta.kind === 'room') return null;
+  const lw = meta.layoutW || 40, lh = meta.layoutH || 40;
+  const ax = obj.position.x - lw / 2, az = obj.position.z - lh / 2;
+  for (const [, other] of selectable) {
+    if (other === obj) continue;
+    const om = other.userData || {};
+    if (om.kind !== 'furniture' && om.kind !== 'room') continue;
+    const ow = om.layoutW || 80, oh = om.layoutH || 56;
+    const bx = other.position.x - ow / 2, bz = other.position.z - oh / 2;
+    const cx = obj.position.x, cz = obj.position.z;
+    if (cx >= bx && cx <= bx + ow && cz >= bz && cz <= bz + oh) {
+      return other;
+    }
+  }
+  return null;
+}
+
+function resolveSolidCollisions(obj) {
+  const meta = obj.userData || {};
+  if (meta.kind !== 'furniture' && meta.kind !== 'room') return;
+  const lw = meta.layoutW || 80, lh = meta.layoutH || 56;
+  let ax = obj.position.x - lw / 2, az = obj.position.z - lh / 2;
+  for (const [, other] of selectable) {
+    if (other === obj) continue;
+    const om = other.userData || {};
+    if (om.kind !== 'furniture' && om.kind !== 'room') continue;
+    const ow = om.layoutW || 80, oh = om.layoutH || 56;
+    const bx = other.position.x - ow / 2, bz = other.position.z - oh / 2;
+    if (aabbOverlapXZ(ax, az, lw, lh, bx, bz, ow, oh)) {
+      // هل دادن به نزدیک‌ترین لبه
+      const cx = obj.position.x, cz = obj.position.z;
+      const ocy = other.position.x, ocz = other.position.z;
+      const dx = cx - ocy, dz = cz - ocz;
+      if (Math.abs(dx) > Math.abs(dz)) {
+        obj.position.x = ocy + (dx >= 0 ? 1 : -1) * (lw / 2 + ow / 2 + 2);
+      } else {
+        obj.position.z = ocz + (dz >= 0 ? 1 : -1) * (lh / 2 + oh / 2 + 2);
+      }
+      ax = obj.position.x - lw / 2;
+      az = obj.position.z - lh / 2;
+    }
+  }
+}
+
+function tryAttachGltf(group, modelUrl, scale) {
+  if (!modelUrl || !gltfLoader) return;
+  const key = modelUrl + '|' + (scale || 1);
+  const apply = (scene) => {
+    const root = scene.clone(true);
+    const s = scale || 1;
+    root.scale.setScalar(s);
+    root.traverse((c) => {
+      if (c.isMesh) {
+        c.castShadow = true;
+        c.receiveShadow = true;
+      }
+    });
+    // مخفی کردن جعبه‌های رویه‌ای تقریبی
+    group.children.slice().forEach((ch) => {
+      if (ch.userData && ch.userData.__procedural) group.remove(ch);
+    });
+    group.add(root);
+  };
+  if (gltfCache.has(key)) {
+    apply(gltfCache.get(key));
+    return;
+  }
+  gltfLoader.load(
+    modelUrl,
+    (gltf) => {
+      gltfCache.set(key, gltf.scene);
+      apply(gltf.scene);
+    },
+    undefined,
+    (err) => console.warn('gltf load failed', modelUrl, err)
+  );
+}
+
+
 function boxMesh(w, h, d, color, opts = {}) {
   w = Math.max(0.5, w || 1);
   h = Math.max(0.5, h || 1);
@@ -729,6 +823,9 @@ function buildFurniture(node) {
   g.userData.kind = node.kind;
   g.userData.layoutW = (node.meta && node.meta.layoutW) || node.w || 80;
   g.userData.layoutH = (node.meta && node.meta.layoutH) || node.d || 56;
+  if (node.meta && node.meta.modelUrl) {
+    tryAttachGltf(g, node.meta.modelUrl, node.meta.modelScale || 1);
+  }
   selectable.set(node.id, g);
   return g;
 }
@@ -952,28 +1049,30 @@ function buildScene(data) {
 
   scene.add(roomRoot);
 
-  // نورپردازی طبیعی‌تر: آسمان گرم + خورشید نرم + پرکننده
-  const hemi = new THREE.HemisphereLight(0xfff5e6, 0x8d8578, 0.55);
+  // نور: نیم‌کره + محیطی + خورشید با سایه نرم + پرکننده سرد
+  const W = data.width || 400, H = data.height || 280, D = data.depth || 400;
+  const hemi = new THREE.HemisphereLight(0xfff6ea, 0x6b6358, 0.62);
   roomRoot.add(hemi);
-  const amb = new THREE.AmbientLight(0xfff8f0, 0.35);
+  const amb = new THREE.AmbientLight(0xfff8f0, 0.28);
   roomRoot.add(amb);
-  const dir = new THREE.DirectionalLight(0xfff1d6, 0.85);
-  dir.position.set(
-    (data.width || 400) * 0.3,
-    (data.height || 280) * 1.8,
-    (data.depth || 400) * 0.25
-  );
+  const dir = new THREE.DirectionalLight(0xfff1d6, 0.95);
+  dir.position.set(W * 0.35, H * 2.2, D * 0.28);
   dir.castShadow = true;
-  dir.shadow.mapSize.set(1024, 1024);
-  dir.shadow.bias = -0.00015;
+  dir.shadow.mapSize.set(1536, 1536);
+  dir.shadow.bias = -0.00012;
+  dir.shadow.camera.near = 10;
+  dir.shadow.camera.far = Math.max(W, D) * 4;
+  dir.shadow.camera.left = -Math.max(W, D);
+  dir.shadow.camera.right = Math.max(W, D);
+  dir.shadow.camera.top = Math.max(W, D);
+  dir.shadow.camera.bottom = -Math.max(W, D);
   roomRoot.add(dir);
-  const fill = new THREE.DirectionalLight(0xc5d8f0, 0.22);
-  fill.position.set(
-    -(data.width || 400) * 0.45,
-    (data.height || 280) * 0.75,
-    -(data.depth || 400) * 0.35
-  );
+  const fill = new THREE.DirectionalLight(0xb8d0f0, 0.28);
+  fill.position.set(-W * 0.5, H * 0.9, -D * 0.4);
   roomRoot.add(fill);
+  const rim = new THREE.DirectionalLight(0xffe0c0, 0.12);
+  rim.position.set(0, H * 0.4, -D * 0.8);
+  roomRoot.add(rim);
 
   applyTopDownCamera(data);
 
@@ -1164,12 +1263,22 @@ function init() {
         const layoutH = obj.userData.layoutH || 56;
         const layoutX = obj.position.x - layoutW / 2;
         const layoutY = obj.position.z - layoutH / 2;
+        resolveSolidCollisions(obj);
+        const nest = findNestHost(obj);
+        if (nest) {
+          // محتوا کمی بالاتر از سطح میز/میزبان
+          obj.position.y = Math.max(obj.position.y, 12);
+          setHud('قرارگیری روی «' + (nest.userData.name || nest.userData.sourceId || 'میزبان') + '»');
+        }
+        const lx = obj.position.x - layoutW / 2;
+        const ly = obj.position.z - layoutH / 2;
         postToFlutter({
           type: 'itemMoved',
           sourceId: meta.sourceId,
           nodeId: meta.nodeId,
-          layoutX: layoutX,
-          layoutY: layoutY,
+          layoutX: lx,
+          layoutY: ly,
+          nestHostId: nest && (nest.userData.sourceId || nest.userData.nodeId) || null,
         });
         dragTarget = null;
         controls.enabled = true;
