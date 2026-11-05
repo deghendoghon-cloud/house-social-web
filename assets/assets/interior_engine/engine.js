@@ -398,8 +398,11 @@ function floorMesh(w, h, d, colorHex, opts = {}) {
   const pattern = (opts.pattern || 'wood');
   const pColor = opts.patternColorHex || opts.patternColor || '#8D6E63';
   const intensity = opts.intensity != null ? opts.intensity : 0.55;
-  let tex;
-  if (pattern === 'wood' || pattern === 'solid') {
+  let tex = null;
+  if (pattern === 'image' && opts.imageUrl) {
+    // بافت از عکس آلبوم — بارگذاری ناهمگام
+    tex = null;
+  } else if (pattern === 'wood' || pattern === 'solid') {
     tex = pattern === 'solid' ? null : makeWoodTexture(opts.seed || 1);
     if (tex) tex.repeat.set(Math.max(2, w / 180), Math.max(2, d / 180));
   } else {
@@ -421,6 +424,24 @@ function floorMesh(w, h, d, colorHex, opts = {}) {
     if (tex) mesh.material.map = tex;
   }
   mesh.receiveShadow = true;
+  if (pattern === 'image' && opts.imageUrl) {
+    const loader = new THREE.TextureLoader();
+    loader.setCrossOrigin('anonymous');
+    loader.load(
+      opts.imageUrl,
+      (texture) => {
+        texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+        texture.repeat.set(Math.max(1, w / 400), Math.max(1, d / 400));
+        if (THREE.SRGBColorSpace) texture.colorSpace = THREE.SRGBColorSpace;
+        if (mesh.material) {
+          mesh.material.map = texture;
+          mesh.material.needsUpdate = true;
+        }
+      },
+      undefined,
+      (err) => console.warn('floor image load failed', err)
+    );
+  }
   return mesh;
 }
 
@@ -899,6 +920,7 @@ function buildNode(node, parent) {
       pattern: meta.pattern,
       patternColor: meta.patternColor,
       intensity: meta.intensity,
+      imageUrl: meta.imageUrl,
     });
     obj.position.set(node.x, node.y != null ? node.y : 1.5, node.z);
     if (node.sourceId) {
