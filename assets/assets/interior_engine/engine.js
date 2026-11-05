@@ -287,7 +287,7 @@ function wallMesh(w, h, d, colorHex, opts = {}) {
     clearcoat: 0.6,
     clearcoatRoughness: 0.2,
     side: THREE.DoubleSide,
-    depthWrite: false,
+    depthWrite: opts.depthWrite === true,
   });
   // fallback اگر Physical در دسترس نباشد
   if (!mat.transmission && mat.transmission !== 0) {
@@ -299,7 +299,7 @@ function wallMesh(w, h, d, colorHex, opts = {}) {
       roughness: 0.15,
       metalness: 0.08,
       side: THREE.DoubleSide,
-      depthWrite: false,
+      depthWrite: opts.depthWrite === true,
     });
     const mesh = new THREE.Mesh(geo, mat2);
     mesh.castShadow = false;
@@ -317,15 +317,178 @@ function wallMesh(w, h, d, colorHex, opts = {}) {
 function applyWallColor(obj, colorHex) {
   if (!obj) return;
   const c = hexColor(colorHex, 0xb3e5fc);
+  obj.userData.colorHex = colorHex;
   obj.traverse((ch) => {
-    if (ch.isMesh && ch.material) {
-      const mats = Array.isArray(ch.material) ? ch.material : [ch.material];
-      for (const m of mats) {
-        if (m.color) m.color.setHex(c);
-        m.needsUpdate = true;
+    if (!ch.isMesh || !ch.material) return;
+    const mats = Array.isArray(ch.material) ? ch.material : [ch.material];
+    for (const m of mats) {
+      if (m.color) m.color.setHex(c);
+      // برای شیشه کمی opaqueتر تا رنگ دیده شود
+      if (m.transparent && m.opacity != null && m.opacity < 0.35) {
+        m.opacity = Math.max(m.opacity, 0.28);
       }
+      m.needsUpdate = true;
     }
   });
+}
+
+
+/** شفافیت: ۱ پنجره > ۲ دیوار > ۳ در > ۴ قاب */
+const GLASS = {
+  window: { opacity: 0.18, transmission: 0.92 },
+  wall: { opacity: 0.38, transmission: 0.65 },
+  door: { opacity: 0.52, transmission: 0.42 },
+  frame: { opacity: 0.82, transmission: 0.08 },
+};
+
+function glassPanel(w, h, d, colorHex, level) {
+  const g = GLASS[level] || GLASS.wall;
+  return wallMesh(w, h, d, colorHex, {
+    opacity: g.opacity,
+    transmission: g.transmission,
+    round: 1.2,
+    depthWrite: level === 'door' || level === 'window',
+  });
+}
+
+function frameBar(w, h, d, colorHex) {
+  const mesh = wallMesh(w, h, d, colorHex || '#78909C', {
+    opacity: GLASS.frame.opacity,
+    transmission: GLASS.frame.transmission,
+    round: 0.8,
+    depthWrite: true,
+  });
+  return mesh;
+}
+
+/** در شیشه‌ای با قاب سه طرفه (بالا + دو کنار) */
+
+/** ابعاد نمای در/پنجره: عرض روی دیوار + ضخامت دیوار؛ چرخش برای شرق/غرب */
+function openingFaceSize(node) {
+  const side = (node.meta && node.meta.side) || 's';
+  const isEW = side === 'e' || side === 'w';
+  const wRaw = Math.abs(node.w || 90);
+  const dRaw = Math.abs(node.d || 8);
+  const h = Math.abs(node.h || 180);
+  // روی دیوار N/S: w=عرض، d=ضخامت ؛ روی E/W برعکس ذخیره شده
+  const faceW = isEW ? Math.max(wRaw, dRaw) : wRaw;
+  const thick = isEW ? Math.min(wRaw, dRaw) : dRaw;
+  // اگر E/W و w از اول thickness بوده
+  const faceW2 = isEW ? dRaw : wRaw;
+  const thick2 = isEW ? wRaw : dRaw;
+  return {
+    faceW: faceW2 > 0 ? faceW2 : faceW,
+    thick: thick2 > 0 ? thick2 : thick,
+    h,
+    side,
+    isEW,
+    rotY: isEW ? Math.PI / 2 : 0,
+  };
+}
+
+function buildDoor(node) {
+  const g = new THREE.Group();
+  const dim = openingFaceSize(node);
+  const w = dim.faceW;
+  const h = dim.h;
+  const d = Math.max(2, dim.thick);
+  const glassC = node.colorHex || '#90CAF9';
+  const frameC = (node.meta && node.meta.frameColorHex) || '#B0BEC5';
+  const ft = Math.max(4, Math.min(8, Math.min(w, h) * 0.06));
+
+  const glass = glassPanel(Math.max(2, w - ft * 2), Math.max(2, h - ft), d * 0.55, glassC, 'door');
+  glass.position.y = -ft / 2;
+  g.add(glass);
+
+  const left = frameBar(ft, h, d, frameC);
+  left.position.set(-w / 2 + ft / 2, 0, 0);
+  g.add(left);
+  const right = frameBar(ft, h, d, frameC);
+  right.position.set(w / 2 - ft / 2, 0, 0);
+  g.add(right);
+  const top = frameBar(w, ft, d, frameC);
+  top.position.set(0, h / 2 - ft / 2, 0);
+  g.add(top);
+
+  g.position.set(node.x, node.y || h / 2, node.z);
+  g.rotation.y = dim.rotY;
+  g.userData.isOpening = true;
+  g.userData.openingKind = 'door';
+  g.renderOrder = 20;
+  g.traverse((c) => { c.renderOrder = 20; });
+  return g;
+}
+
+/**
+ * پنجره چهارخانه مثل نمونه:
+ * دو شیشه کوچک بالا + دو شیشه بلند پایین، قاب و مولیون نازک
+ * ضخامت = ضخامت دیوار (نه چندلایه ضخیم)
+ */
+function buildWindow(node) {
+  const g = new THREE.Group();
+  const dim = openingFaceSize(node);
+  const w = dim.faceW;
+  const h = dim.h;
+  const d = Math.max(2, dim.thick); // = ضخامت دیوار
+  const glassC = node.colorHex || '#B3E5FC';
+  const frameC = (node.meta && node.meta.frameColorHex) || '#CFD8DC';
+  const ft = Math.max(3.5, Math.min(7, Math.min(w, h) * 0.05));
+  const mt = Math.max(2.5, ft * 0.65);
+
+  const gw = Math.max(2, w - ft * 2);
+  const gh = Math.max(2, h - ft * 2);
+  // ردیف بالا حدود ۳۲٪ ارتفاع داخلی — شبیه عکس مرجع
+  const upperRatio = 0.32;
+  const upperH = Math.max(2, gh * upperRatio - mt / 2);
+  const lowerH = Math.max(2, gh * (1 - upperRatio) - mt / 2);
+  const paneW = Math.max(2, (gw - mt) / 2);
+  const xL = - (paneW + mt) / 2;
+  const xR = (paneW + mt) / 2;
+  // مرکز عمودی هر ردیف نسبت به مرکز پنجره
+  const yUpper = gh / 2 - upperH / 2;
+  const yLower = -gh / 2 + lowerH / 2;
+
+  const panes = [
+    [xL, yUpper, paneW, upperH],
+    [xR, yUpper, paneW, upperH],
+    [xL, yLower, paneW, lowerH],
+    [xR, yLower, paneW, lowerH],
+  ];
+  for (const [px, py, pw, ph] of panes) {
+    const pane = glassPanel(pw, ph, d * 0.4, glassC, 'window');
+    pane.position.set(px, py, 0);
+    g.add(pane);
+  }
+
+  // قاب بیرونی نازک
+  const left = frameBar(ft, h, d, frameC);
+  left.position.set(-w / 2 + ft / 2, 0, 0);
+  g.add(left);
+  const right = frameBar(ft, h, d, frameC);
+  right.position.set(w / 2 - ft / 2, 0, 0);
+  g.add(right);
+  const top = frameBar(w, ft, d, frameC);
+  top.position.set(0, h / 2 - ft / 2, 0);
+  g.add(top);
+  const bot = frameBar(w, ft, d, frameC);
+  bot.position.set(0, -h / 2 + ft / 2, 0);
+  g.add(bot);
+
+  // مولیون عمودی سراسری
+  const vBar = frameBar(mt, gh, d * 0.9, frameC);
+  g.add(vBar);
+  // مولیون افقی بین ردیف بالا و پایین
+  const hBar = frameBar(gw, mt, d * 0.9, frameC);
+  hBar.position.y = (yUpper - upperH / 2 + yLower + lowerH / 2) / 2;
+  g.add(hBar);
+
+  g.position.set(node.x, node.y || h / 2, node.z);
+  g.rotation.y = dim.rotY;
+  g.userData.isOpening = true;
+  g.userData.openingKind = 'window';
+  g.renderOrder = 20;
+  g.traverse((c) => { c.renderOrder = 20; });
+  return g;
 }
 
 /** مبلمان ترکیبی بر اساس kindKey */
@@ -579,13 +742,25 @@ function buildNode(node, parent) {
     obj.userData.side = (node.meta && node.meta.side) || null;
     selectable.set(node.id, obj);
   } else if (kind === 'door') {
-    obj = boxMesh(node.w, node.h, node.d, hexColor(node.colorHex, PALETTE.door), {
-      roughness: 0.55,
-      metalness: 0.05,
-      round: 4,
-      edges: false,
-    });
-    obj.position.set(node.x, node.y, node.z);
+    obj = buildDoor(node);
+    obj.userData.selectable = true;
+    obj.userData.nodeId = node.id;
+    obj.userData.sourceId = node.sourceId || node.id;
+    obj.userData.name = node.name || 'در';
+    obj.userData.kind = 'door';
+    obj.userData.colorHex = node.colorHex;
+    obj.userData.meta = node.meta || {};
+    selectable.set(node.id, obj);
+  } else if (kind === 'window') {
+    obj = buildWindow(node);
+    obj.userData.selectable = true;
+    obj.userData.nodeId = node.id;
+    obj.userData.sourceId = node.sourceId || node.id;
+    obj.userData.name = node.name || 'پنجره';
+    obj.userData.kind = 'window';
+    obj.userData.colorHex = node.colorHex;
+    obj.userData.meta = node.meta || {};
+    selectable.set(node.id, obj);
   } else if (kind === 'roomShell') {
     obj = wallMesh(node.w, node.h, node.d, node.colorHex || '#B3E5FC', {
       round: 3,
@@ -764,15 +939,35 @@ function init() {
       };
     }
 
+    function resolveSelectable(mesh) {
+      let obj = mesh;
+      while (obj && !obj.userData.nodeId && obj.parent) obj = obj.parent;
+      return obj && obj.userData.nodeId ? obj : null;
+    }
+
     function pickSelectable(ndc) {
       pointer.x = ndc.x;
       pointer.y = ndc.y;
       raycaster.setFromCamera(pointer, camera);
-      const hits = raycaster.intersectObjects([...selectable.values()], true);
+      // دیوارها depthWrite=false دارند؛ همهٔ برخوردها را می‌گیریم و اولویت می‌دهیم
+      const roots = [...selectable.values()];
+      const hits = raycaster.intersectObjects(roots, true);
       if (!hits.length) return null;
-      let obj = hits[0].object;
-      while (obj && !obj.userData.nodeId && obj.parent) obj = obj.parent;
-      return obj && obj.userData.nodeId ? obj : null;
+      const resolved = [];
+      for (const h of hits) {
+        const o = resolveSelectable(h.object);
+        if (o) resolved.push(o);
+      }
+      if (!resolved.length) return null;
+      // ۱) در و پنجره ۲) مبلمان/محتوا ۳) دیوار
+      for (const o of resolved) {
+        if (o.userData.kind === 'door' || o.userData.kind === 'window') return o;
+      }
+      for (const o of resolved) {
+        const k = o.userData.kind;
+        if (k !== 'wall' && k !== 'roomShell') return o;
+      }
+      return resolved[0];
     }
 
     function clearLongPress() {
@@ -791,31 +986,40 @@ function init() {
       clearLongPress();
       // نگه‌داشتن ۵ ثانیه روی دیوار → انتخاب رنگ
       const hit = pickSelectable(ndc);
-      if (hit && (hit.userData.kind === 'wall' || hit.userData.kind === 'roomShell')) {
+      if (hit && (hit.userData.kind === 'wall' || hit.userData.kind === 'roomShell'
+          || hit.userData.kind === 'door' || hit.userData.kind === 'window')) {
         longPressTarget = hit;
         longPressTimer = setTimeout(() => {
           if (!longPressTarget) return;
           const o = longPressTarget;
           clearLongPress();
           selectNode(o.userData.nodeId);
+          const meta = o.userData.meta || {};
+          const type = (o.userData.kind === 'door' || o.userData.kind === 'window')
+            ? 'openingLongPress'
+            : 'wallLongPress';
           postToFlutter({
-            type: 'wallLongPress',
+            type,
             nodeId: o.userData.nodeId,
             sourceId: o.userData.sourceId,
             name: o.userData.name,
             kind: o.userData.kind,
-            side: o.userData.side,
+            side: o.userData.side || meta.side || null,
             colorHex: o.userData.colorHex || null,
+            meta,
+            w: o.userData._w || (meta.width) || null,
+            h: o.userData._h || null,
           });
-          setHud('انتخاب رنگ دیوار…');
+          setHud(type === 'openingLongPress' ? 'تنظیم در/پنجره…' : 'انتخاب رنگ دیوار…');
         }, LONG_PRESS_MS);
       }
       if (!editMode) return;
       const obj = pickSelectable(ndc);
-      if (!obj || !obj.userData.sourceId) return;
-      // فقط مبلمان/content قابل کشیدن
+      if (!obj) return;
       const k = obj.userData.kind;
       if (k === 'roomShell' || k === 'roomFloor' || k === 'wall') return;
+      // مبلمان یا در/پنجره
+      if (k !== 'door' && k !== 'window' && !obj.userData.sourceId) return;
       dragTarget = obj;
       // نقطهٔ برخورد با صفحهٔ کف
       pointer.x = ndc.x;
@@ -875,6 +1079,23 @@ function init() {
         });
         dragTarget = null;
         controls.enabled = true;
+        ev.preventDefault();
+        return;
+      }
+      // در / پنجره جابه‌جا شد
+      if (dragTarget && (dragTarget.userData.kind === 'door' || dragTarget.userData.kind === 'window')) {
+        postToFlutter({
+          type: 'openingMoved',
+          nodeId: dragTarget.userData.nodeId,
+          kind: dragTarget.userData.kind,
+          x: dragTarget.position.x,
+          y: dragTarget.position.y,
+          z: dragTarget.position.z,
+          meta: dragTarget.userData.meta || {},
+        });
+        dragTarget = null;
+        controls.enabled = true;
+        setHud('موقعیت در/پنجره به‌روز شد — برای دیوار دقیق از تنظیمات استفاده کنید');
         ev.preventDefault();
         return;
       }
@@ -996,6 +1217,9 @@ window.InteriorEngine = {
     applyWallColor(obj, colorHex);
     obj.userData.colorHex = colorHex;
   },
+  setOpeningColor(nodeId, colorHex) {
+    this.setWallColor(nodeId, colorHex);
+  },
 };
 
 window.addEventListener('message', (ev) => {
@@ -1020,6 +1244,8 @@ window.addEventListener('message', (ev) => {
     window.InteriorEngine.setEditMode(!!msg.enabled);
   } else if (msg.type === 'setWallColor') {
     window.InteriorEngine.setWallColor(msg.nodeId || '', msg.colorHex || '#B3E5FC');
+  } else if (msg.type === 'setOpeningColor') {
+    window.InteriorEngine.setOpeningColor(msg.nodeId || '', msg.colorHex || '#90CAF9');
   }
 });
 
