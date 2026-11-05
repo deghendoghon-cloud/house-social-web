@@ -735,6 +735,53 @@
     if (now - lastCamPost > 300) run(); else camTimer = setTimeout(run, 300);
   }
 
+
+  // ---------------------------------------------------------------- user location (local only — never sent to server)
+  var userLocEntity = null;
+  function setUserLocation(cmd) {
+    if (typeof cmd.lat !== 'number' || typeof cmd.lng !== 'number') return;
+    var lat = cmd.lat, lng = cmd.lng;
+    var acc = Math.max(8, Math.min(Number(cmd.accuracyM) || 40, 5000));
+    var pos = Cesium.Cartesian3.fromDegrees(lng, lat, 5);
+    if (!userLocEntity) {
+      userLocEntity = viewer.entities.add({
+        id: 'user-location-local',
+        position: pos,
+        point: {
+          pixelSize: 14,
+          color: Cesium.Color.fromCssColorString('#1E88E5'),
+          outlineColor: Cesium.Color.WHITE,
+          outlineWidth: 2,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY
+        },
+        ellipse: {
+          semiMajorAxis: acc,
+          semiMinorAxis: acc,
+          material: Cesium.Color.fromCssColorString('#1E88E5').withAlpha(0.18),
+          outline: true,
+          outlineColor: Cesium.Color.fromCssColorString('#1E88E5').withAlpha(0.55),
+          outlineWidth: 2,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND
+        }
+      });
+    } else {
+      userLocEntity.position = pos;
+      if (userLocEntity.ellipse) {
+        userLocEntity.ellipse.semiMajorAxis = acc;
+        userLocEntity.ellipse.semiMinorAxis = acc;
+      }
+    }
+    scene.requestRender();
+  }
+  function clearUserLocation() {
+    if (userLocEntity) {
+      viewer.entities.remove(userLocEntity);
+      userLocEntity = null;
+      scene.requestRender();
+    }
+  }
+
   function flyTo(cmd) {
     markInput();
     var opts = {
@@ -846,6 +893,8 @@
     if (!cmd || !widget) return;
     switch (cmd.cmd) {
       case 'setMarkers': setMarkers(cmd.markers); break;
+      case 'setUserLocation': setUserLocation(cmd); break;
+      case 'clearUserLocation': clearUserLocation(); break;
       case 'flyTo': flyTo(cmd); break;
       case 'zoom': zoomBy(cmd.factor || 2); break;
       case 'setMode': applyMode(cmd.mode); break;
