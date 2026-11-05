@@ -20,6 +20,10 @@ let dragTarget = null;
 let dragOffset = new THREE.Vector3();
 let dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 let pointerDownPos = null;
+let longPressTimer = null;
+let longPressTarget = null;
+const LONG_PRESS_MS = 5000;
+
 
 
 const PALETTE = {
@@ -258,23 +262,70 @@ function floorMesh(w, h, d, colorHex, opts = {}) {
   return mesh;
 }
 
+/** دیوار شیشه‌ای نیمه‌شفاف با رنگ قابل تنظیم */
 function wallMesh(w, h, d, colorHex, opts = {}) {
-  const tex = makePlasterTexture(opts.seed || 2);
-  tex.repeat.set(Math.max(1, w / 120), Math.max(1, h / 120));
-  const mesh = boxMesh(w, h, d, hexColor(colorHex, PALETTE.wall), {
-    map: tex,
-    roughness: 0.92,
-    metalness: 0.0,
-    round: opts.round != null ? opts.round : 2.5,
-    edges: false,
-    castShadow: opts.castShadow !== false,
-    ...opts,
-  });
-  if (mesh.material) {
-    mesh.material.color.setHex(hexColor(colorHex, PALETTE.wall));
-    mesh.material.map = tex;
+  w = Math.max(0.5, w || 1);
+  h = Math.max(0.5, h || 1);
+  d = Math.max(0.5, d || 1);
+  const round = opts.round != null ? opts.round : 2;
+  let geo;
+  if (round > 0.4 && typeof RoundedBoxGeometry !== 'undefined') {
+    geo = new RoundedBoxGeometry(w, h, d, 2, Math.min(round, Math.min(w, h, d) * 0.2));
+  } else {
+    geo = new THREE.BoxGeometry(w, h, d);
   }
+  const base = hexColor(colorHex, 0xb3e5fc);
+  const mat = new THREE.MeshPhysicalMaterial({
+    color: base,
+    transparent: true,
+    opacity: opts.opacity != null ? opts.opacity : 0.38,
+    roughness: 0.12,
+    metalness: 0.05,
+    transmission: opts.transmission != null ? opts.transmission : 0.65,
+    thickness: Math.min(w, d) * 0.35,
+    ior: 1.45,
+    clearcoat: 0.6,
+    clearcoatRoughness: 0.2,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  // fallback اگر Physical در دسترس نباشد
+  if (!mat.transmission && mat.transmission !== 0) {
+    mat.dispose();
+    const mat2 = new THREE.MeshStandardMaterial({
+      color: base,
+      transparent: true,
+      opacity: 0.42,
+      roughness: 0.15,
+      metalness: 0.08,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const mesh = new THREE.Mesh(geo, mat2);
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    mesh.userData.isGlassWall = true;
+    return mesh;
+  }
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = false;
+  mesh.receiveShadow = true;
+  mesh.userData.isGlassWall = true;
   return mesh;
+}
+
+function applyWallColor(obj, colorHex) {
+  if (!obj) return;
+  const c = hexColor(colorHex, 0xb3e5fc);
+  obj.traverse((ch) => {
+    if (ch.isMesh && ch.material) {
+      const mats = Array.isArray(ch.material) ? ch.material : [ch.material];
+      for (const m of mats) {
+        if (m.color) m.color.setHex(c);
+        m.needsUpdate = true;
+      }
+    }
+  });
 }
 
 /** مبلمان ترکیبی بر اساس kindKey */
@@ -514,8 +565,19 @@ function buildNode(node, parent) {
     obj.position.set(node.x, node.y || 0, node.z);
     obj.visible = !!(node.meta && node.meta.showCeiling);
   } else if (kind === 'wall') {
-    obj = wallMesh(node.w, node.h, node.d, node.colorHex || '#E8E0D5', { seed: 2, round: 2 });
+    obj = wallMesh(node.w, node.h, node.d, node.colorHex || '#B3E5FC', {
+      round: 2,
+      opacity: 0.38,
+      transmission: 0.65,
+    });
     obj.position.set(node.x, node.y, node.z);
+    obj.userData.selectable = true;
+    obj.userData.nodeId = node.id;
+    obj.userData.sourceId = node.sourceId || null;
+    obj.userData.name = node.name || node.id;
+    obj.userData.kind = 'wall';
+    obj.userData.side = (node.meta && node.meta.side) || null;
+    selectable.set(node.id, obj);
   } else if (kind === 'door') {
     obj = boxMesh(node.w, node.h, node.d, hexColor(node.colorHex, PALETTE.door), {
       roughness: 0.55,
@@ -525,10 +587,10 @@ function buildNode(node, parent) {
     });
     obj.position.set(node.x, node.y, node.z);
   } else if (kind === 'roomShell') {
-    obj = wallMesh(node.w, node.h, node.d, node.colorHex || '#D5C8B8', {
-      seed: 3,
+    obj = wallMesh(node.w, node.h, node.d, node.colorHex || '#B3E5FC', {
       round: 3,
-      castShadow: true,
+      opacity: 0.4,
+      transmission: 0.6,
     });
     obj.position.set(node.x, node.y, node.z);
     obj.userData.selectable = true;
@@ -646,7 +708,7 @@ function buildScene(data) {
 
   applyTopDownCamera(data);
 
-  setHud((data.name || 'فضا') + ' · از بالا · بکشید برای چرخش · دو انگشت زوم');
+  setHud((data.name || 'فضا') + ' · شیشه · بکشید برای چرخش · نگه‌داشتن دیوار ۵ثانیه = رنگ');
   ready = true;
   postToFlutter({ type: 'ready', roomId: data.roomId || data.hallId });
 }
@@ -671,7 +733,7 @@ function init() {
     }
 
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(PALETTE.bg);
+    scene.background = new THREE.Color(0x243038);
     scene.fog = new THREE.Fog(PALETTE.bg, 1800, 4200);
 
     camera = new THREE.PerspectiveCamera(
@@ -713,17 +775,47 @@ function init() {
       return obj && obj.userData.nodeId ? obj : null;
     }
 
+    function clearLongPress() {
+      if (longPressTimer) {
+        clearTimeout(longPressTimer);
+        longPressTimer = null;
+      }
+      longPressTarget = null;
+    }
+
     function onPointerDown(ev) {
       if (!ready) return;
       const ndc = eventToNDC(ev);
       if (!ndc) return;
       pointerDownPos = { x: ndc.clientX, y: ndc.clientY };
+      clearLongPress();
+      // نگه‌داشتن ۵ ثانیه روی دیوار → انتخاب رنگ
+      const hit = pickSelectable(ndc);
+      if (hit && (hit.userData.kind === 'wall' || hit.userData.kind === 'roomShell')) {
+        longPressTarget = hit;
+        longPressTimer = setTimeout(() => {
+          if (!longPressTarget) return;
+          const o = longPressTarget;
+          clearLongPress();
+          selectNode(o.userData.nodeId);
+          postToFlutter({
+            type: 'wallLongPress',
+            nodeId: o.userData.nodeId,
+            sourceId: o.userData.sourceId,
+            name: o.userData.name,
+            kind: o.userData.kind,
+            side: o.userData.side,
+            colorHex: o.userData.colorHex || null,
+          });
+          setHud('انتخاب رنگ دیوار…');
+        }, LONG_PRESS_MS);
+      }
       if (!editMode) return;
       const obj = pickSelectable(ndc);
       if (!obj || !obj.userData.sourceId) return;
       // فقط مبلمان/content قابل کشیدن
       const k = obj.userData.kind;
-      if (k === 'roomShell' || k === 'roomFloor') return;
+      if (k === 'roomShell' || k === 'roomFloor' || k === 'wall') return;
       dragTarget = obj;
       // نقطهٔ برخورد با صفحهٔ کف
       pointer.x = ndc.x;
@@ -740,6 +832,13 @@ function init() {
     }
 
     function onPointerMove(ev) {
+      if (longPressTimer && pointerDownPos) {
+        const ndc = eventToNDC(ev);
+        if (ndc) {
+          const dist = Math.hypot(ndc.clientX - pointerDownPos.x, ndc.clientY - pointerDownPos.y);
+          if (dist > 12) clearLongPress();
+        }
+      }
       if (!dragTarget || !editMode) return;
       const ndc = eventToNDC(ev);
       if (!ndc) return;
@@ -755,6 +854,7 @@ function init() {
     }
 
     function onPointerUp(ev) {
+      clearLongPress();
       if (dragTarget && editMode) {
         const obj = dragTarget;
         const meta = obj.userData;
@@ -887,8 +987,14 @@ window.InteriorEngine = {
     setHud(
       editMode
         ? 'حالت جابه‌جایی: وسیله را بکشید و رها کنید'
-        : ((lastSceneKey && 'از بالا · بکشید برای چرخش') || 'آماده')
+        : ((lastSceneKey && 'از بالا · بکشید برای چرخش · نگه‌داشتن دیوار برای رنگ') || 'آماده')
     );
+  },
+  setWallColor(nodeId, colorHex) {
+    const obj = selectable.get(nodeId);
+    if (!obj) return;
+    applyWallColor(obj, colorHex);
+    obj.userData.colorHex = colorHex;
   },
 };
 
@@ -912,6 +1018,8 @@ window.addEventListener('message', (ev) => {
     window.InteriorEngine.setQuality(msg.level || 'normal');
   } else if (msg.type === 'setEditMode') {
     window.InteriorEngine.setEditMode(!!msg.enabled);
+  } else if (msg.type === 'setWallColor') {
+    window.InteriorEngine.setWallColor(msg.nodeId || '', msg.colorHex || '#B3E5FC');
   }
 });
 
