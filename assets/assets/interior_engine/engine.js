@@ -224,6 +224,60 @@ function aabbOverlapXZ(ax, az, aw, ad, bx, bz, bw, bd) {
   return ax < bx + bw - eps && ax + aw > bx + eps && az < bz + bd - eps && az + ad > bz + eps;
 }
 
+/** چسباندن در/پنجره به نزدیک‌ترین دیوار و کف (y از ارتفاع بازشو) */
+function snapOpeningToNearestWall(obj) {
+  const meta = obj.userData || {};
+  const kind = meta.kind;
+  if (kind !== 'door' && kind !== 'window') return;
+  const sceneW = (window.__interiorRoomW) || 400;
+  const sceneD = (window.__interiorRoomD) || 300;
+  const wallT = 12;
+  const inset = 1.5;
+  const h = obj.userData._h || (kind === 'door' ? 210 : 120);
+  const isDoor = kind === 'door';
+  // در همیشه کف؛ پنجره حداقل کمی از کف بالاتر
+  const sill = isDoor ? 0 : Math.max(40, meta.sill || 90);
+  obj.position.y = sill + h / 2;
+
+  const x = obj.position.x, z = obj.position.z;
+  const distS = Math.abs(z - 0);
+  const distN = Math.abs(z - sceneD);
+  const distW = Math.abs(x - 0);
+  const distE = Math.abs(x - sceneW);
+  const minD = Math.min(distS, distN, distW, distE);
+  let side = 's';
+  if (minD === distN) side = 'n';
+  else if (minD === distE) side = 'e';
+  else if (minD === distW) side = 'w';
+  else side = 's';
+
+  const along = (side === 'n' || side === 's') ? sceneW : sceneD;
+  let t = (side === 'n' || side === 's') ? (x / sceneW) : (z / sceneD);
+  t = Math.max(0.08, Math.min(0.92, t));
+  const centerAlong = t * along;
+
+  if (side === 'n') {
+    obj.position.x = centerAlong;
+    obj.position.z = sceneD + wallT / 2 - inset;
+    obj.rotation.y = 0;
+  } else if (side === 's') {
+    obj.position.x = centerAlong;
+    obj.position.z = -wallT / 2 + inset;
+    obj.rotation.y = 0;
+  } else if (side === 'e') {
+    obj.position.x = sceneW + wallT / 2 - inset;
+    obj.position.z = centerAlong;
+    obj.rotation.y = Math.PI / 2;
+  } else {
+    obj.position.x = -wallT / 2 + inset;
+    obj.position.z = centerAlong;
+    obj.rotation.y = Math.PI / 2;
+  }
+  meta.side = side;
+  meta.t = t;
+  meta.sill = sill;
+}
+
 function findNestHost(obj) {
   const meta = obj.userData || {};
   if (meta.kind === 'furniture' || meta.kind === 'room') return null;
@@ -1339,6 +1393,9 @@ function init() {
         if (k === 'furniture' || k === 'room' || k === 'solid') {
           setDragValidityVisual(dragTarget, solidOverlapsAny(dragTarget));
         }
+        if (k === 'door' || k === 'window') {
+          snapOpeningToNearestWall(dragTarget);
+        }
         // y را از ارتفاع قبلی حفظ نکن — group از y=0 ساخته شده
       }
       ev.preventDefault();
@@ -1381,6 +1438,7 @@ function init() {
       }
       // در / پنجره جابه‌جا شد
       if (dragTarget && (dragTarget.userData.kind === 'door' || dragTarget.userData.kind === 'window')) {
+        snapOpeningToNearestWall(dragTarget);
         postToFlutter({
           type: 'openingMoved',
           nodeId: dragTarget.userData.nodeId,
@@ -1388,7 +1446,11 @@ function init() {
           x: dragTarget.position.x,
           y: dragTarget.position.y,
           z: dragTarget.position.z,
-          meta: dragTarget.userData.meta || {},
+          meta: Object.assign({}, dragTarget.userData.meta || {}, {
+            side: dragTarget.userData.side || (dragTarget.userData.meta && dragTarget.userData.meta.side),
+            t: dragTarget.userData.t || (dragTarget.userData.meta && dragTarget.userData.meta.t),
+            sill: dragTarget.userData.kind === 'door' ? 0 : (dragTarget.userData.sill || 90),
+          }),
         });
         dragTarget = null;
         controls.enabled = true;
