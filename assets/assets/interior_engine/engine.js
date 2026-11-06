@@ -22,6 +22,8 @@ let editMode = false;
 let dragTarget = null;
 let dragOffset = new THREE.Vector3();
 let dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+let dragOrigin = null; // {x,y,z} موقعیت شروع کشیدن
+let dragWasInvalid = false;
 let pointerDownPos = null;
 let longPressTimer = null;
 let longPressTarget = null;
@@ -241,31 +243,97 @@ function findNestHost(obj) {
   return null;
 }
 
-function resolveSolidCollisions(obj) {
+function solidOverlapsAny(obj) {
   const meta = obj.userData || {};
-  if (meta.kind !== 'furniture' && meta.kind !== 'room') return;
+  if (meta.kind !== 'furniture' && meta.kind !== 'room') return false;
   const lw = meta.layoutW || 80, lh = meta.layoutH || 56;
-  let ax = obj.position.x - lw / 2, az = obj.position.z - lh / 2;
+  const ax = obj.position.x - lw / 2, az = obj.position.z - lh / 2;
   for (const [, other] of selectable) {
     if (other === obj) continue;
     const om = other.userData || {};
     if (om.kind !== 'furniture' && om.kind !== 'room') continue;
     const ow = om.layoutW || 80, oh = om.layoutH || 56;
     const bx = other.position.x - ow / 2, bz = other.position.z - oh / 2;
-    if (aabbOverlapXZ(ax, az, lw, lh, bx, bz, ow, oh)) {
-      // هل دادن به نزدیک‌ترین لبه
-      const cx = obj.position.x, cz = obj.position.z;
-      const ocy = other.position.x, ocz = other.position.z;
-      const dx = cx - ocy, dz = cz - ocz;
-      if (Math.abs(dx) > Math.abs(dz)) {
-        obj.position.x = ocy + (dx >= 0 ? 1 : -1) * (lw / 2 + ow / 2 + 2);
-      } else {
-        obj.position.z = ocz + (dz >= 0 ? 1 : -1) * (lh / 2 + oh / 2 + 2);
+    if (aabbOverlapXZ(ax, az, lw, lh, bx, bz, ow, oh)) return true;
+  }
+  return false;
+}
+
+function setDragValidityVisual(obj, invalid) {
+  dragWasInvalid = !!invalid;
+  obj.traverse((c) => {
+    if (!c.isMesh || !c.material) return;
+    const mats = Array.isArray(c.material) ? c.material : [c.material];
+    for (const m of mats) {
+      if (m.emissive) {
+        m.emissive.setHex(invalid ? 0xc62828 : 0x000000);
+        m.emissiveIntensity = invalid ? 0.55 : 0.0;
       }
-      ax = obj.position.x - lw / 2;
-      az = obj.position.z - lh / 2;
+    }
+  });
+  if (invalid) setHud('هم‌پوشانی — رها کنید تا به نزدیک‌ترین جای آزاد برود');
+}
+
+/** جستجوی مارپیچی نزدیک‌ترین نقطهٔ بدون هم‌پوشانی جامد */
+function findNearestFreePosition(obj, maxR = 400, step = 16) {
+  const meta = obj.userData || {};
+  const lw = meta.layoutW || 80, lh = meta.layoutH || 56;
+  const ox = obj.position.x, oz = obj.position.z;
+  if (!solidOverlapsAny(obj)) return { x: ox, z: oz };
+  for (let r = step; r <= maxR; r += step) {
+    for (let a = 0; a < 16; a++) {
+      const ang = (a / 16) * Math.PI * 2;
+      obj.position.x = ox + Math.cos(ang) * r;
+      obj.position.z = oz + Math.sin(ang) * r;
+      if (!solidOverlapsAny(obj)) return { x: obj.position.x, z: obj.position.z };
     }
   }
+  // برگرد به مبدأ کشیدن
+  if (dragOrigin) {
+    obj.position.x = dragOrigin.x;
+    obj.position.z = dragOrigin.z;
+  } else {
+    obj.position.x = ox;
+    obj.position.z = oz;
+  }
+  return { x: obj.position.x, z: obj.position.z };
+}
+
+function resolveSolidCollisions(obj) {
+  const meta = obj.userData || {};
+  if (meta.kind !== 'furniture' && meta.kind !== 'room') return;
+  // چند پاس هل‌دادن لبه
+  for (let pass = 0; pass < 8; pass++) {
+    const lw = meta.layoutW || 80, lh = meta.layoutH || 56;
+    let ax = obj.position.x - lw / 2, az = obj.position.z - lh / 2;
+    let moved = false;
+    for (const [, other] of selectable) {
+      if (other === obj) continue;
+      const om = other.userData || {};
+      if (om.kind !== 'furniture' && om.kind !== 'room') continue;
+      const ow = om.layoutW || 80, oh = om.layoutH || 56;
+      const bx = other.position.x - ow / 2, bz = other.position.z - oh / 2;
+      if (aabbOverlapXZ(ax, az, lw, lh, bx, bz, ow, oh)) {
+        const cx = obj.position.x, cz = obj.position.z;
+        const ocy = other.position.x, ocz = other.position.z;
+        const dx = cx - ocy, dz = cz - ocz;
+        if (Math.abs(dx) > Math.abs(dz)) {
+          obj.position.x = ocy + (dx >= 0 ? 1 : -1) * (lw / 2 + ow / 2 + 2);
+        } else {
+          obj.position.z = ocz + (dz >= 0 ? 1 : -1) * (lh / 2 + oh / 2 + 2);
+        }
+        ax = obj.position.x - lw / 2;
+        az = obj.position.z - lh / 2;
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+  // اگر هنوز هم‌پوشان است → نزدیک‌ترین جای آزاد یا برگشت
+  if (solidOverlapsAny(obj)) {
+    findNearestFreePosition(obj);
+  }
+  setDragValidityVisual(obj, false);
 }
 
 function tryAttachGltf(group, modelUrl, scale) {
@@ -1267,6 +1335,10 @@ function init() {
       if (raycaster.ray.intersectPlane(dragPlane, _hit)) {
         dragTarget.position.x = _hit.x + dragOffset.x;
         dragTarget.position.z = _hit.z + dragOffset.z;
+        const k = (dragTarget.userData && dragTarget.userData.kind) || '';
+        if (k === 'furniture' || k === 'room' || k === 'solid') {
+          setDragValidityVisual(dragTarget, solidOverlapsAny(dragTarget));
+        }
         // y را از ارتفاع قبلی حفظ نکن — group از y=0 ساخته شده
       }
       ev.preventDefault();
