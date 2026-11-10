@@ -130,8 +130,8 @@ api.tryAttachGltf = function(group, modelUrl, scale, fit, colorHex) {
   if (!modelUrl || !gltfLoader) return;
   const url = api.resolveModelUrl(modelUrl);
   const key = url + '|' + (scale || 1) + '|' + JSON.stringify(fit || {});
-  const apply = (state.scene) => {
-    const root = state.scene.clone(true);
+  const apply = (sceneRoot) => {
+    const root = sceneRoot.clone(true);
     const s = scale || 1;
     if (s !== 1) root.scale.setScalar(s);
     root.traverse((c) => {
