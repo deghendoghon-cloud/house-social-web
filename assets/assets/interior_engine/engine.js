@@ -15,6 +15,8 @@ let roomRoot = null;
 let selectable = new Map();
 const gltfLoader = new GLTFLoader();
 const gltfCache = new Map();
+const activeTvVideos = [];
+const activeTvTextures = [];
 let selectedId = null;
 let ready = false;
 let lastSceneKey = '';
@@ -390,23 +392,177 @@ function resolveSolidCollisions(obj) {
   setDragValidityVisual(obj, false);
 }
 
-function tryAttachGltf(group, modelUrl, scale) {
+
+function disposeTvMedia() {
+  for (const v of activeTvVideos) {
+    try {
+      v.pause();
+      v.removeAttribute('src');
+      v.load();
+      if (v.parentNode) v.parentNode.removeChild(v);
+    } catch (_) {}
+  }
+  activeTvVideos.length = 0;
+  for (const tex of activeTvTextures) {
+    try { tex.dispose(); } catch (_) {}
+  }
+  activeTvTextures.length = 0;
+}
+
+function applyPosterTexture(mesh, url) {
+  if (!url || !mesh) return;
+  const loader = new THREE.TextureLoader();
+  loader.load(
+    url,
+    (tex) => {
+      tex.colorSpace = THREE.SRGBColorSpace;
+      mesh.material = new THREE.MeshBasicMaterial({
+        map: tex,
+        toneMapped: false,
+      });
+      mesh.material.needsUpdate = true;
+    },
+    undefined,
+    () => console.warn('tv poster failed', url)
+  );
+}
+
+function applyVideoTexture(mesh, url) {
+  if (!url || !mesh) return;
+  try {
+    const video = document.createElement('video');
+    video.crossOrigin = 'anonymous';
+    video.muted = true;
+    video.loop = true;
+    video.playsInline = true;
+    video.autoplay = true;
+    video.preload = 'auto';
+    video.src = url;
+    video.style.display = 'none';
+    document.body.appendChild(video);
+    activeTvVideos.push(video);
+    const tex = new THREE.VideoTexture(video);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    activeTvTextures.push(tex);
+    mesh.material = new THREE.MeshBasicMaterial({
+      map: tex,
+      toneMapped: false,
+    });
+    mesh.material.needsUpdate = true;
+    const tryPlay = () => {
+      video.play().catch(() => {
+        // autoplay blocked — پوستر/صفحهٔ تیره می‌ماند تا کاربر تعامل کند
+      });
+    };
+    video.addEventListener('canplay', tryPlay);
+    tryPlay();
+  } catch (e) {
+    console.warn('tv video texture failed', url, e);
+  }
+}
+
+function attachTvScreen(group, node) {
+  const meta = node.meta || {};
+  const W = node.w || 80;
+  const H = node.h || 50;
+  const D = Math.max(node.d || 8, 6);
+  // صفحهٔ تخت جلوی بدنه
+  const geom = new THREE.PlaneGeometry(W * 0.86, H * 0.78);
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0x0a1628,
+    toneMapped: false,
+  });
+  const screen = new THREE.Mesh(geom, mat);
+  screen.position.set(0, 0, D * 0.55 + 1.2);
+  screen.userData.tvScreen = true;
+  screen.userData.sourceId = node.sourceId;
+  screen.name = 'tv_screen';
+  group.add(screen);
+
+  const mode = meta.tvVideoMode || 'none';
+  if (mode === 'file' && meta.tvStreamUrl) {
+    applyVideoTexture(screen, meta.tvStreamUrl);
+  } else if ((mode === 'youtube' || mode === 'aparat') && meta.tvPosterUrl) {
+    applyPosterTexture(screen, meta.tvPosterUrl);
+  } else if (mode === 'youtube' && meta.tvStreamUrl) {
+    // fallback: بدون poster
+    screen.material.color.setHex(0x111827);
+  } else {
+    // idle glow
+    screen.material.color.setHex(0x0c1a2e);
+  }
+  return screen;
+}
+
+function resolveModelUrl(url) {
+  if (!url) return url;
+  // نسبی نسبت به صفحهٔ موتور
+  try {
+    return new URL(url, window.location.href).href;
+  } catch (_) {
+    return url;
+  }
+}
+
+/** فیت مدل glTF داخل جعبهٔ هدف؛ مبدأ گروه = مرکز جسم (مثل جعبه‌های رویه‌ای) */
+function fitGltfToBox(root, targetW, targetH, targetD) {
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root);
+  if (box.isEmpty()) return;
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  if (size.x < 1e-6 || size.y < 1e-6 || size.z < 1e-6) return;
+  const sx = (targetW || size.x) / size.x;
+  const sy = (targetH || size.y) / size.y;
+  const sz = (targetD || size.z) / size.z;
+  const s = Math.min(sx, sy, sz) * 0.92;
+  root.scale.multiplyScalar(s);
+  root.updateMatrixWorld(true);
+  box.setFromObject(root);
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+  // مرکز افقی روی مبدأ گروه
+  root.position.x -= center.x;
+  root.position.z -= center.z;
+  // کف مدل روی -targetH/2 (مبدأ گروه = وسط ارتفاع)
+  const th = targetH || size.y;
+  root.position.y -= box.min.y;
+  root.position.y -= th / 2;
+}
+
+function tryAttachGltf(group, modelUrl, scale, fit) {
   if (!modelUrl || !gltfLoader) return;
-  const key = modelUrl + '|' + (scale || 1);
+  const url = resolveModelUrl(modelUrl);
+  const key = url + '|' + (scale || 1) + '|' + JSON.stringify(fit || {});
   const apply = (scene) => {
     const root = scene.clone(true);
     const s = scale || 1;
-    root.scale.setScalar(s);
+    if (s !== 1) root.scale.setScalar(s);
     root.traverse((c) => {
       if (c.isMesh) {
         c.castShadow = true;
         c.receiveShadow = true;
+        if (c.material) {
+          const mats = Array.isArray(c.material) ? c.material : [c.material];
+          mats.forEach((m) => {
+            if (m) {
+              m.side = THREE.DoubleSide;
+              m.needsUpdate = true;
+            }
+          });
+        }
       }
     });
-    // مخفی کردن جعبه‌های رویه‌ای تقریبی
+    if (fit && (fit.w || fit.h || fit.d)) {
+      fitGltfToBox(root, fit.w, fit.h, fit.d);
+    }
+    // حذف جعبه‌های رویه‌ای
     group.children.slice().forEach((ch) => {
       if (ch.userData && ch.userData.__procedural) group.remove(ch);
     });
+    root.userData.__gltf = true;
     group.add(root);
   };
   if (gltfCache.has(key)) {
@@ -414,13 +570,13 @@ function tryAttachGltf(group, modelUrl, scale) {
     return;
   }
   gltfLoader.load(
-    modelUrl,
+    url,
     (gltf) => {
       gltfCache.set(key, gltf.scene);
       apply(gltf.scene);
     },
     undefined,
-    (err) => console.warn('gltf load failed', modelUrl, err)
+    (err) => console.warn('gltf load failed', url, err)
   );
 }
 
@@ -959,6 +1115,10 @@ function buildFurniture(node) {
     g.add(body);
   }
 
+  // همهٔ هندسهٔ ساخته‌شده رویه‌ای‌اند تا با glTF جایگزین شوند
+  g.traverse((ch) => {
+    if (ch !== g) ch.userData.__procedural = true;
+  });
   g.userData.selectable = true;
   g.userData.nodeId = node.id;
   g.userData.sourceId = node.sourceId;
@@ -967,7 +1127,17 @@ function buildFurniture(node) {
   g.userData.layoutW = (node.meta && node.meta.layoutW) || node.w || 80;
   g.userData.layoutH = (node.meta && node.meta.layoutH) || node.d || 56;
   if (node.meta && node.meta.modelUrl) {
-    tryAttachGltf(g, node.meta.modelUrl, node.meta.modelScale || 1);
+    const fit = {
+      w: node.meta.fitW || node.w,
+      h: node.meta.fitH || node.h,
+      d: node.meta.fitD || node.d,
+    };
+    tryAttachGltf(g, node.meta.modelUrl, node.meta.modelScale || 1, fit);
+  }
+  // صفحهٔ تلویزیون با بافت ویدئو/پوستر (بعد از glTF تا پاک نشود)
+  const kindKey = (node.meta && node.meta.kindKey) || '';
+  if (kind === 'tv' || kindKey === 'tv' || kindKey === 'television') {
+    attachTvScreen(g, node);
   }
   selectable.set(node.id, g);
   return g;
@@ -1179,6 +1349,7 @@ function applyTopDownCamera(data) {
 
 function buildScene(data) {
   if (!scene || !camera || !controls) return;
+  disposeTvMedia();
 
   const key = JSON.stringify({
     id: data.roomId || data.hallId || data.name,
@@ -1516,6 +1687,51 @@ function init() {
     }
 
     canvas.addEventListener('pointerdown', onPointerDown);
+    canvas.addEventListener('touchstart', (ev) => {
+      if (!editMode || !ev.targetTouches || ev.targetTouches.length !== 2) return;
+      const obj = dragTarget || (selectedId && selectable.get(selectedId));
+      if (!obj) return;
+      const k = obj.userData && obj.userData.kind;
+      if (k !== 'furniture' && k !== 'roomFloor' && k !== 'content') return;
+      const d0 = touchDist(ev.targetTouches[0], ev.targetTouches[1]);
+      pinchResize = {
+        obj,
+        startDist: d0,
+        startW: obj.userData.layoutW || 80,
+        startH: obj.userData.layoutH || 56,
+        kind: k,
+      };
+      controls.enabled = false;
+      ev.preventDefault();
+    }, { passive: false });
+    canvas.addEventListener('touchmove', (ev) => {
+      if (!pinchResize || !ev.targetTouches || ev.targetTouches.length < 2) return;
+      const d = touchDist(ev.targetTouches[0], ev.targetTouches[1]);
+      const scale = d / Math.max(1, pinchResize.startDist);
+      pinchResize.obj.userData.layoutW = pinchResize.startW;
+      pinchResize.obj.userData.layoutH = pinchResize.startH;
+      applyPinchScale(pinchResize.obj, scale, pinchResize.kind);
+      setHud('اندازه: ' + Math.round(pinchResize.obj.userData.layoutW) + '×' + Math.round(pinchResize.obj.userData.layoutH));
+      ev.preventDefault();
+    }, { passive: false });
+    canvas.addEventListener('touchend', (ev) => {
+      if (!pinchResize) return;
+      if (ev.targetTouches && ev.targetTouches.length >= 2) return;
+      const obj = pinchResize.obj;
+      const meta = obj.userData || {};
+      postToFlutter({
+        type: meta.kind === 'roomFloor' ? 'roomResized' : 'itemResized',
+        sourceId: meta.sourceId,
+        nodeId: meta.nodeId,
+        layoutW: meta.layoutW,
+        layoutH: meta.layoutH,
+        layoutX: obj.position.x - (meta.layoutW || 80) / 2,
+        layoutY: obj.position.z - (meta.layoutH || 56) / 2,
+      });
+      pinchResize = null;
+      controls.enabled = true;
+      setHud('اندازه ذخیره شد');
+    });
     canvas.addEventListener('pointermove', onPointerMove);
     canvas.addEventListener('pointerup', onPointerUp);
     canvas.addEventListener('pointercancel', onPointerUp);
@@ -1595,9 +1811,44 @@ window.InteriorEngine = {
       level === 'low' ? 1 : Math.min(window.devicePixelRatio || 1, level === 'high' ? 2 : 1.5);
     renderer.setPixelRatio(pr);
   },
+
+  // --- تغییر سایز با دو انگشت (pinch) در حالت ویرایش ---
+  function activeTouches(ev) {
+    return ev.targetTouches ? ev.targetTouches.length : 0;
+  }
+  function touchDist(t0, t1) {
+    const dx = t0.clientX - t1.clientX;
+    const dy = t0.clientY - t1.clientY;
+    return Math.hypot(dx, dy);
+  }
+  function applyPinchScale(obj, scale, kind) {
+    if (!obj) return;
+    const sw = Math.max(36, (obj.userData.layoutW || 80) * scale);
+    const sh = Math.max(36, (obj.userData.layoutH || 56) * scale);
+    obj.userData.layoutW = sw;
+    obj.userData.layoutH = sh;
+    // مقیاس بصری تقریبی نسبت به اندازهٔ اولیهٔ مش
+    const baseW = obj.userData._baseW || obj.userData.layoutW || 80;
+    const baseH = obj.userData._baseH || obj.userData.layoutH || 56;
+    if (!obj.userData._baseW) {
+      obj.userData._baseW = obj.userData.layoutW || 80;
+      obj.userData._baseH = obj.userData.layoutH || 56;
+      obj.userData._baseScaleX = obj.scale.x;
+      obj.userData._baseScaleZ = obj.scale.z;
+    }
+    const sx = sw / obj.userData._baseW;
+    const sz = sh / obj.userData._baseH;
+    obj.scale.x = (obj.userData._baseScaleX || 1) * sx;
+    obj.scale.z = (obj.userData._baseScaleZ || 1) * sz;
+    if (kind === 'roomFloor' && dragRoomParts) {
+      // فقط کف مقیاس می‌شود؛ بعد از رها کردن صحنه از سرور بازسازی می‌شود
+    }
+  }
+
   setEditMode(enabled) {
     editMode = !!enabled;
     dragTarget = null;
+    pinchResize = null;
     if (controls) controls.enabled = true;
     setHud(
       editMode
