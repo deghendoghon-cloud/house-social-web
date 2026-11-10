@@ -287,8 +287,8 @@ api.init = function() {
       if (!obj) return;
       const k = obj.userData && obj.userData.kind;
       if (k !== 'furniture' && k !== 'roomFloor' && k !== 'content') return;
-      const d0 = touchDist(ev.targetTouches[0], ev.targetTouches[1]);
-      pinchResize = {
+      const d0 = api.touchDist(ev.targetTouches[0], ev.targetTouches[1]);
+      state.pinchResize = {
         obj,
         startDist: d0,
         startW: obj.userData.layoutW || 80,
@@ -299,19 +299,19 @@ api.init = function() {
       ev.preventDefault();
     }, { passive: false });
     canvas.addEventListener('touchmove', (ev) => {
-      if (!pinchResize || !ev.targetTouches || ev.targetTouches.length < 2) return;
-      const d = touchDist(ev.targetTouches[0], ev.targetTouches[1]);
-      const scale = d / Math.max(1, pinchResize.startDist);
-      pinchResize.obj.userData.layoutW = pinchResize.startW;
-      pinchResize.obj.userData.layoutH = pinchResize.startH;
-      applyPinchScale(pinchResize.obj, scale, pinchResize.kind);
-      api.setHud('اندازه: ' + Math.round(pinchResize.obj.userData.layoutW) + '×' + Math.round(pinchResize.obj.userData.layoutH));
+      if (!state.pinchResize || !ev.targetTouches || ev.targetTouches.length < 2) return;
+      const d = api.touchDist(ev.targetTouches[0], ev.targetTouches[1]);
+      const scale = d / Math.max(1, state.pinchResize.startDist);
+      state.pinchResize.obj.userData.layoutW = state.pinchResize.startW;
+      state.pinchResize.obj.userData.layoutH = state.pinchResize.startH;
+      api.applyPinchScale(state.pinchResize.obj, scale, state.pinchResize.kind);
+      api.setHud('اندازه: ' + Math.round(state.pinchResize.obj.userData.layoutW) + '×' + Math.round(state.pinchResize.obj.userData.layoutH));
       ev.preventDefault();
     }, { passive: false });
     canvas.addEventListener('touchend', (ev) => {
-      if (!pinchResize) return;
+      if (!state.pinchResize) return;
       if (ev.targetTouches && ev.targetTouches.length >= 2) return;
-      const obj = pinchResize.obj;
+      const obj = state.pinchResize.obj;
       const meta = obj.userData || {};
       api.postToFlutter({
         type: meta.kind === 'roomFloor' ? 'roomResized' : 'itemResized',
@@ -322,7 +322,7 @@ api.init = function() {
         layoutX: obj.position.x - (meta.layoutW || 80) / 2,
         layoutY: obj.position.z - (meta.layoutH || 56) / 2,
       });
-      pinchResize = null;
+      state.pinchResize = null;
       state.controls.enabled = true;
       api.setHud('اندازه ذخیره شد');
     });

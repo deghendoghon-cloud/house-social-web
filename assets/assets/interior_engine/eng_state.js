@@ -7,6 +7,7 @@ export const errEl = document.getElementById('err');
 
 export const api = {};
 export const state = {
+  pinchResize: null,
   renderer: null,
   scene: null,
   camera: null,

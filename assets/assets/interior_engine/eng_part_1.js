@@ -242,7 +242,7 @@ api.findNestHost = function(obj) {
   if (meta.kind === 'furniture' || meta.kind === 'room') return null;
   const lw = meta.layoutW || 40, lh = meta.layoutH || 40;
   const ax = obj.position.x - lw / 2, az = obj.position.z - lh / 2;
-  for (const [, other] of selectable) {
+  for (const other of selectable.values()) {
     if (other === obj) continue;
     const om = other.userData || {};
     if (om.kind !== 'furniture' && om.kind !== 'room') continue;
@@ -261,7 +261,7 @@ api.solidOverlapsAny = function(obj) {
   if (meta.kind !== 'furniture' && meta.kind !== 'room') return false;
   const lw = meta.layoutW || 80, lh = meta.layoutH || 56;
   const ax = obj.position.x - lw / 2, az = obj.position.z - lh / 2;
-  for (const [, other] of selectable) {
+  for (const other of selectable.values()) {
     if (other === obj) continue;
     const om = other.userData || {};
     if (om.kind !== 'furniture' && om.kind !== 'room') continue;
@@ -320,7 +320,7 @@ api.resolveSolidCollisions = function(obj) {
     const lw = meta.layoutW || 80, lh = meta.layoutH || 56;
     let ax = obj.position.x - lw / 2, az = obj.position.z - lh / 2;
     let moved = false;
-    for (const [, other] of selectable) {
+    for (const other of selectable.values()) {
       if (other === obj) continue;
       const om = other.userData || {};
       if (om.kind !== 'furniture' && om.kind !== 'room') continue;
