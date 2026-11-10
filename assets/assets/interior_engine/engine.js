@@ -532,7 +532,26 @@ function fitGltfToBox(root, targetW, targetH, targetD) {
   root.position.y -= th / 2;
 }
 
-function tryAttachGltf(group, modelUrl, scale, fit) {
+function tintGltfMaterials(root, colorHex) {
+  if (!colorHex || !root) return;
+  const tint = new THREE.Color(hexColor(colorHex, 0xffffff));
+  // فقط متریال‌های غیر فلزی/تیره را با رنگ آیتم مخلوط کن
+  root.traverse((c) => {
+    if (!c.isMesh || !c.material) return;
+    const mats = Array.isArray(c.material) ? c.material : [c.material];
+    mats.forEach((m) => {
+      if (!m || !m.color) return;
+      const metal = m.metalness != null ? m.metalness : 0;
+      // فلز و صفحهٔ خیلی تیره را دست نزن
+      const lum = m.color.r * 0.3 + m.color.g * 0.59 + m.color.b * 0.11;
+      if (metal > 0.4 || lum < 0.12) return;
+      m.color.lerp(tint, 0.55);
+      m.needsUpdate = true;
+    });
+  });
+}
+
+function tryAttachGltf(group, modelUrl, scale, fit, colorHex) {
   if (!modelUrl || !gltfLoader) return;
   const url = resolveModelUrl(modelUrl);
   const key = url + '|' + (scale || 1) + '|' + JSON.stringify(fit || {});
@@ -545,6 +564,12 @@ function tryAttachGltf(group, modelUrl, scale, fit) {
         c.castShadow = true;
         c.receiveShadow = true;
         if (c.material) {
+          // clone materials so tint per-instance does not pollute cache
+          if (Array.isArray(c.material)) {
+            c.material = c.material.map((m) => (m ? m.clone() : m));
+          } else {
+            c.material = c.material.clone();
+          }
           const mats = Array.isArray(c.material) ? c.material : [c.material];
           mats.forEach((m) => {
             if (m) {
@@ -558,7 +583,7 @@ function tryAttachGltf(group, modelUrl, scale, fit) {
     if (fit && (fit.w || fit.h || fit.d)) {
       fitGltfToBox(root, fit.w, fit.h, fit.d);
     }
-    // حذف جعبه‌های رویه‌ای
+    tintGltfMaterials(root, colorHex);
     group.children.slice().forEach((ch) => {
       if (ch.userData && ch.userData.__procedural) group.remove(ch);
     });
@@ -1132,7 +1157,13 @@ function buildFurniture(node) {
       h: node.meta.fitH || node.h,
       d: node.meta.fitD || node.d,
     };
-    tryAttachGltf(g, node.meta.modelUrl, node.meta.modelScale || 1, fit);
+    tryAttachGltf(
+      g,
+      node.meta.modelUrl,
+      node.meta.modelScale || 1,
+      fit,
+      node.colorHex
+    );
   }
   // صفحهٔ تلویزیون با بافت ویدئو/پوستر (بعد از glTF تا پاک نشود)
   const kindKey = (node.meta && node.meta.kindKey) || '';
