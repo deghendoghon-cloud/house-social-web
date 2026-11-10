@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+export { RoundedBoxGeometry };
 
 export const canvas = document.getElementById('c');
 export const hud = document.getElementById('hud');
