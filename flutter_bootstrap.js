@@ -38,10 +38,10 @@ addEventListener("message", eventListener);
 if (!window._flutter) {
   window._flutter = {};
 }
-_flutter.buildConfig = {"engineRevision":"af7e796e161ae0bb1ff0758c71a7105418bd9ded","wasmHashes":{"skwasm_heavy.wasm":"565f5cc1cca6ab120f11934b105f01fec4b58b480c82e0889dca93af8e6f8635","wimp.wasm":"e924eaafd801d41e017d178f3fd5cf8a417f641fe35c9ed34a4e1d7582283e0c","canvaskit.wasm":"fbed517a43e82452404446683f00f2e876d835aed84410695759e67b6bb01cd3","chromium/canvaskit.wasm":"ae8ff1d858140f7b1300ced3fa89fb8c9dce0a400a0f4f1e11f6dcfb3315fdcf","webparagraph/canvaskit.wasm":"0ce1b05082efdc8529550e8a01f6ff0593972d55525035010e26f5600aa9f254","skwasm.wasm":"e540fd5e8303b7b68ec2718cb49e9c421f8ade3075b15e02a7059a62654df9a1","assets/assets/globe_engine/cesium/ThirdParty/draco_decoder.wasm":"2516a4e43526d71787bf2f678f951329f7f858f8f15f42d4bc9e370b31a0da3a","assets/assets/globe_engine/cesium/ThirdParty/zip-module.wasm":"1ebaf6e62f247a005189493097f460bc9050f248755c55ecba34fd54257a6bb2","assets/assets/globe_engine/cesium/ThirdParty/basis_transcoder.wasm":"96849a2719b431008533806199ad4e513ef5a5f632b87e452fb1eea961d5730e","assets/assets/globe_engine/cesium/ThirdParty/wasm_splats_bg.wasm":"530cb068ddd94b7267db1e1690ebdfcd94c552b2886d79398438841c42a1a14d"},"builds":[{"compileTarget":"dart2js","renderer":"canvaskit","mainJsPath":"main.dart.js"},{}]};
+_flutter.buildConfig = {"engineRevision":"af7e796e161ae0bb1ff0758c71a7105418bd9ded","wasmHashes":{"skwasm_heavy.wasm":"565f5cc1cca6ab120f11934b105f01fec4b58b480c82e0889dca93af8e6f8635","wimp.wasm":"e924eaafd801d41e017d178f3fd5cf8a417f641fe35c9ed34a4e1d7582283e0c","canvaskit.wasm":"fbed517a43e82452404446683f00f2e876d835aed84410695759e67b6bb01cd3","chromium/canvaskit.wasm":"ae8ff1d858140f7b1300ced3fa89fb8c9dce0a400a0f4f1e11f6dcfb3315fdcf","webparagraph/canvaskit.wasm":"0ce1b05082efdc8529550e8a01f6ff0593972d55525035010e26f5600aa9f254","skwasm.wasm":"e540fd5e8303b7b68ec2718cb49e9c421f8ade3075b15e02a7059a62654df9a1"},"builds":[{"compileTarget":"dart2js","renderer":"canvaskit","mainJsPath":"main.dart.js"},{}]};
 
 _flutter.loader.load({
   serviceWorkerSettings: {
-    serviceWorkerVersion: "161626177" /* Flutter's service worker is deprecated and will be removed in a future Flutter release. */
+    serviceWorkerVersion: "3616101056" /* Flutter's service worker is deprecated and will be removed in a future Flutter release. */
   }
 });

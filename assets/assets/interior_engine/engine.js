@@ -1051,6 +1051,10 @@ function buildNode(node, parent) {
       obj.userData.sourceId = node.sourceId;
       obj.userData.name = node.name || node.id;
       obj.userData.kind = 'roomFloor';
+      obj.userData.layoutW = node.w;
+      obj.userData.layoutH = node.d;
+      obj.userData._w = node.w;
+      obj.userData._d = node.d;
       selectable.set(node.id, obj);
     }
   } else if (kind === 'ceiling') {
@@ -1142,10 +1146,20 @@ function applyTopDownCamera(data) {
   const target = new THREE.Vector3(tx, ty, tz);
   controls.target.copy(target);
 
-  const span = Math.max(data.width || 400, data.depth || 400);
-  const dist = cam.distance != null ? cam.distance : span * 1.2 + 80;
-  controls.minDistance = cam.minDistance != null ? cam.minDistance : span * 0.35;
-  controls.maxDistance = cam.maxDistance != null ? cam.maxDistance : span * 2.8;
+  const W = data.width || 400;
+  const D = data.depth || 400;
+  const span = Math.max(W, D);
+  // فاصلهٔ مناسب با نسبت تصویر واقعی کانواس تا کل سالن/اتاق در فریم باشد
+  const aspect = (camera && camera.aspect) ? camera.aspect : (canvas.clientWidth / Math.max(1, canvas.clientHeight));
+  const fov = ((camera && camera.fov) ? camera.fov : 42) * Math.PI / 180;
+  const halfFov = fov / 2;
+  const fitPad = 1.22; // حاشیهٔ کمی دور صحنه
+  const distForDepth = (D * 0.5 * fitPad) / Math.tan(halfFov);
+  const distForWidth = (W * 0.5 * fitPad) / (Math.tan(halfFov) * Math.max(0.35, aspect));
+  const fitDist = Math.max(distForDepth, distForWidth, span * 0.55);
+  const dist = cam.distance != null ? Math.max(cam.distance, fitDist * 0.85) : fitDist;
+  controls.minDistance = cam.minDistance != null ? cam.minDistance : Math.min(span * 0.35, fitDist * 0.45);
+  controls.maxDistance = cam.maxDistance != null ? cam.maxDistance : Math.max(span * 3.5, fitDist * 2.2);
   controls.minPolarAngle = cam.minPolar != null ? cam.minPolar : 0.12;
   controls.maxPolarAngle = cam.maxPolar != null ? cam.maxPolar : 1.05;
   controls.minAzimuthAngle = -Infinity;
@@ -1405,19 +1419,39 @@ function init() {
       clearLongPress();
       if (dragTarget && editMode) {
         const obj = dragTarget;
-        const meta = obj.userData;
-        // center → layout top-left
-        const lw = meta.layoutW || (obj.userData._w) || 80;
-        const lh = meta.layoutH || (obj.userData._h) || 56;
+        const meta = obj.userData || {};
+        const k = meta.kind || '';
+        // جابه‌جایی اتاق روی پلان سالن
+        if (k === 'roomFloor' && meta.sourceId) {
+          const rw = obj.userData._w || obj.geometry?.parameters?.width || 220;
+          const rd = obj.userData._d || obj.geometry?.parameters?.depth || 160;
+          // ترجیح: ابعاد از userData که در build ست می‌شود
+          const layoutW = meta.layoutW || rw || 220;
+          const layoutH = meta.layoutH || rd || 160;
+          const lx = obj.position.x - layoutW / 2;
+          const ly = obj.position.z - layoutH / 2;
+          postToFlutter({
+            type: 'roomMoved',
+            sourceId: meta.sourceId,
+            nodeId: meta.nodeId,
+            layoutX: lx,
+            layoutY: ly,
+            layoutW,
+            layoutH,
+          });
+          dragTarget = null;
+          dragRoomParts = null;
+          controls.enabled = true;
+          setHud('اتاق جابه‌جا شد');
+          ev.preventDefault();
+          return;
+        }
         // از meta گره — در buildFurniture ذخیره می‌کنیم
         const layoutW = obj.userData.layoutW || 80;
         const layoutH = obj.userData.layoutH || 56;
-        const layoutX = obj.position.x - layoutW / 2;
-        const layoutY = obj.position.z - layoutH / 2;
         resolveSolidCollisions(obj);
         const nest = findNestHost(obj);
         if (nest) {
-          // محتوا کمی بالاتر از سطح میز/میزبان
           obj.position.y = Math.max(obj.position.y, 12);
           setHud('قرارگیری روی «' + (nest.userData.name || nest.userData.sourceId || 'میزبان') + '»');
         }
@@ -1432,6 +1466,7 @@ function init() {
           nestHostId: nest && (nest.userData.sourceId || nest.userData.nodeId) || null,
         });
         dragTarget = null;
+        dragRoomParts = null;
         controls.enabled = true;
         ev.preventDefault();
         return;
