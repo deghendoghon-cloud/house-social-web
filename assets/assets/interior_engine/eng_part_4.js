@@ -210,12 +210,22 @@ api.buildScene = function(data) {
   if (!state.scene || !state.camera || !state.controls) return;
   api.disposeTvMedia();
 
+  // ابعاد واقعی اتاق برای snap در/پنجره
+  window.__interiorRoomW = data.width || 400;
+  window.__interiorRoomD = data.depth || 300;
+
+  // اثر انگشت شامل موقعیت در/پنجره تا بعد از جابجایی حتماً بازسازی شود
+  const openFp = (data.nodes || [])
+    .filter((n) => n && (n.kind === 'door' || n.kind === 'window'))
+    .map((n) => [n.id, n.x, n.z, n.w, n.d].join(':'))
+    .join('|');
   const key = JSON.stringify({
     id: data.roomId || data.hallId || data.name,
     n: (data.nodes || []).length,
     w: data.width,
     d: data.depth,
     v: data.version || 0,
+    o: openFp,
   });
   if (key === state.lastSceneKey && state.roomRoot) {
     api.postToFlutter({ type: 'state.ready', roomId: data.roomId || data.hallId });

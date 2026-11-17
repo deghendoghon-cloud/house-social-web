@@ -251,22 +251,25 @@ api.init = function() {
       // در / پنجره جابه‌جا شد
       if (state.dragTarget && (state.dragTarget.userData.kind === 'door' || state.dragTarget.userData.kind === 'window')) {
         api.snapOpeningToNearestWall(state.dragTarget);
+        const ud = state.dragTarget.userData || {};
         api.postToFlutter({
           type: 'openingMoved',
-          nodeId: state.dragTarget.userData.nodeId,
-          kind: state.dragTarget.userData.kind,
+          nodeId: ud.nodeId,
+          kind: ud.kind,
           x: state.dragTarget.position.x,
           y: state.dragTarget.position.y,
           z: state.dragTarget.position.z,
-          meta: Object.assign({}, state.dragTarget.userData.meta || {}, {
-            side: state.dragTarget.userData.side || (state.dragTarget.userData.meta && state.dragTarget.userData.meta.side),
-            t: state.dragTarget.userData.t || (state.dragTarget.userData.meta && state.dragTarget.userData.meta.t),
-            sill: state.dragTarget.userData.kind === 'door' ? 0 : (state.dragTarget.userData.sill || 90),
+          meta: Object.assign({}, ud.meta || {}, {
+            side: ud.side,
+            t: ud.t,
+            sill: ud.kind === 'door' ? 0 : (ud.sill || 90),
           }),
         });
+        // صحنه بعدی حتماً از نو ساخته شود تا hit-target با ظاهر یکی باشد
+        state.lastSceneKey = '';
         state.dragTarget = null;
         state.controls.enabled = true;
-        api.setHud('موقعیت در/پنجره به‌روز شد — برای دیوار دقیق از تنظیمات استفاده کنید');
+        api.setHud('موقعیت در/پنجره به‌روز شد');
         ev.preventDefault();
         return;
       }

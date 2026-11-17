@@ -235,6 +235,14 @@ api.snapOpeningToNearestWall = function(obj) {
   meta.side = side;
   meta.t = t;
   meta.sill = sill;
+  obj.userData.side = side;
+  obj.userData.t = t;
+  obj.userData.sill = sill;
+  if (obj.userData.meta) {
+    obj.userData.meta.side = side;
+    obj.userData.meta.t = t;
+    obj.userData.meta.sill = sill;
+  }
 }
 
 api.findNestHost = function(obj) {
