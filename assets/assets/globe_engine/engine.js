@@ -56,6 +56,8 @@
   var feedCycleEpoch = 0;
   var feedLastHeading = null;
   var feedHeadingAcc = 0;
+  var feedLeadersColl = null; // PolylineCollection سبک برای خطوط حباب
+  var _feedMatCache = new Map(); // alpha -> Material
   var bordersPrim = null;
   var placesBillboards = null;
   var placesData = null;
@@ -660,20 +662,51 @@
     return { hemi: hemi, center: center, ang: ang };
   }
 
+  function feedLeaderMaterial(alpha) {
+    var a = Math.round(alpha * 100) / 100;
+    if (_feedMatCache.has(a)) return _feedMatCache.get(a);
+    var mat = Cesium.Material.fromType('Color', {
+      color: Cesium.Color.WHITE.withAlpha(a)
+    });
+    _feedMatCache.set(a, mat);
+    return mat;
+  }
+
+  function ensureFeedLeadersColl() {
+    if (feedLeadersColl) return feedLeadersColl;
+    feedLeadersColl = scene.primitives.add(new Cesium.PolylineCollection({
+      scene: scene
+    }));
+    return feedLeadersColl;
+  }
+
+  /** خط راهنما با PolylineCollection (سبک‌تر از Entity) */
   function ensureFeedLeader(m) {
     if (m.leader) return m.leader;
-    var e = feedDs.entities.add({
-      id: 'feedline:' + m.data.id,
-      polyline: {
-        positions: [],
-        width: 1.25,
-        material: Cesium.Color.WHITE.withAlpha(0.28),
-        clampToGround: false,
-        arcType: Cesium.ArcType.NONE
-      }
+    var coll = ensureFeedLeadersColl();
+    var lat = m.data.lat, lng = m.data.lng;
+    var line = coll.add({
+      positions: [
+        Cesium.Cartesian3.fromDegrees(lng, lat, 4),
+        Cesium.Cartesian3.fromDegrees(lng, lat, 55)
+      ],
+      width: 1.0,
+      material: feedLeaderMaterial(0.28),
+      show: false,
+      // در زوم خیلی دور خط را نشان نده
+      distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0.0, 4.5e6)
     });
-    m.leader = e;
-    return e;
+    m.leader = line;
+    m._leaderH = 55;
+    return line;
+  }
+
+  function removeFeedLeader(m) {
+    if (!m || !m.leader) return;
+    try {
+      if (feedLeadersColl) feedLeadersColl.remove(m.leader);
+    } catch (e) {}
+    m.leader = null;
   }
 
   function setFeedItems(list) {
@@ -713,9 +746,7 @@
     Array.from(feedMarkers.keys()).forEach(function (id) {
       if (!seen.has(id)) {
         var m = feedMarkers.get(id);
-        if (m.leader) {
-          try { feedDs.entities.remove(m.leader); } catch (e) {}
-        }
+        removeFeedLeader(m);
         feedDs.entities.remove(m.entity);
         feedMarkers.delete(id);
       }
@@ -824,23 +855,23 @@
         m.data.lng, m.data.lat, hBubble
       );
 
-      // خط کمرنگ از خانه (سطح) به حباب — فقط برای جانبی‌ها
+      // خط کمرنگ از خانه به حباب — فقط جانبی؛ با PolylineCollection
       if (!isPrimary) {
         var lead = ensureFeedLeader(m);
+        var hNeed = hBubble;
+        if (m._leaderH !== hNeed) {
+          lead.positions = [
+            Cesium.Cartesian3.fromDegrees(m.data.lng, m.data.lat, 4),
+            Cesium.Cartesian3.fromDegrees(m.data.lng, m.data.lat, hNeed)
+          ];
+          m._leaderH = hNeed;
+        }
+        var alpha = 0.2 + t * 0.18;
+        lead.material = feedLeaderMaterial(alpha);
         lead.show = true;
-        lead.polyline.positions = [
-          Cesium.Cartesian3.fromDegrees(m.data.lng, m.data.lat, 8),
-          Cesium.Cartesian3.fromDegrees(m.data.lng, m.data.lat, hBubble)
-        ];
-        lead.polyline.material = Cesium.Color.WHITE.withAlpha(0.22 + t * 0.15);
       } else if (m.leader) {
         m.leader.show = false;
       }
-    });
-
-    // حذف leader برای آیتم‌های حذف‌شده از لیست
-    feedMarkers.forEach(function (m, id) {
-      if (!visibleIds[id] && m.leader) m.leader.show = false;
     });
 
     scene.requestRender();
