@@ -53,6 +53,9 @@
   var feedDs = null; // حباب یادداشت/ویدئو/خبر
   var feedMarkers = new Map(); // id -> {entity, data}
   var feedMaxVisible = 10;
+  var feedCycleEpoch = 0;
+  var feedLastHeading = null;
+  var feedHeadingAcc = 0;
   var bordersPrim = null;
   var placesBillboards = null;
   var placesData = null;
@@ -647,19 +650,89 @@
   }
   function updateFeedFacing() {
     if (!feedDs || feedMarkers.size === 0 || !widget) return;
+
+    // پیشرفت «دور گردش»: با چرخش heading حدود ۳۶۰ درجه یک epoch جلو می‌رود
+    try {
+      var st = cameraState();
+      if (st && typeof st.heading === 'number') {
+        if (feedLastHeading == null) feedLastHeading = st.heading;
+        var dh = st.heading - feedLastHeading;
+        while (dh > 180) dh -= 360;
+        while (dh < -180) dh += 360;
+        feedHeadingAcc += Math.abs(dh);
+        feedLastHeading = st.heading;
+        if (feedHeadingAcc >= 300) { // تقریباً یک دور
+          feedHeadingAcc = 0;
+          feedCycleEpoch++;
+        }
+      }
+    } catch (e) {}
+
     var scored = [];
     feedMarkers.forEach(function (m, id) {
       var s = feedFacingScore(m.data.lat, m.data.lng);
-      scored.push({ id: id, m: m, score: s });
+      scored.push({ id: id, m: m, score: s, data: m.data });
     });
     scored.sort(function (a, b) { return b.score - a.score; });
-    var frontish = scored.filter(function (x) { return x.score > 0.02; });
-    var visible = (frontish.length ? frontish : scored).slice(0, feedMaxVisible);
-    var visibleIds = new Set(visible.map(function (x) { return x.id; }));
-    var frontId = visible.length ? visible[0].id : null;
+
+    // از هر خانه / نویسنده در این دور فقط یک آیتم (چرخشی)
+    var pickedByGroup = {};
+    var rotated = [];
+    scored.forEach(function (x) {
+      var gkey = (x.data.houseId || x.data.authorId || x.id) + '';
+      if (!pickedByGroup[gkey]) pickedByGroup[gkey] = [];
+      pickedByGroup[gkey].push(x);
+    });
+    Object.keys(pickedByGroup).forEach(function (gkey) {
+      var arr = pickedByGroup[gkey];
+      // پایدار بر اساس id مرتب تا epoch قابل پیش‌بینی باشد
+      arr.sort(function (a, b) { return (a.id < b.id) ? -1 : 1; });
+      var idx = feedCycleEpoch % arr.length;
+      rotated.push(arr[idx]);
+    });
+    rotated.sort(function (a, b) { return b.score - a.score; });
+
+    var frontish = rotated.filter(function (x) { return x.score > 0.02; });
+    var pool = frontish.length ? frontish : rotated;
+
+    // خوشه‌بندی جغرافیایی نزدیک: در هر سلول شبکه فقط یکی full می‌شود
+    var cellSize = 0.35; // درجه ≈ ۴۰km
+    function cellKey(lat, lng) {
+      return Math.round(lat / cellSize) + ':' + Math.round(lng / cellSize);
+    }
+    var bestInCell = {};
+    pool.forEach(function (x) {
+      var ck = cellKey(x.data.lat, x.data.lng);
+      if (!bestInCell[ck] || x.score > bestInCell[ck].score) bestInCell[ck] = x;
+    });
+
+    // حداکثر ۱۰ قابل‌نمایش؛ اولویت امتیاز
+    var visible = pool.slice(0, feedMaxVisible);
+    var visibleIds = {};
+    visible.forEach(function (x) { visibleIds[x.id] = true; });
+
+    // فقط یک full: بهترین در بین visible که در سلولش هم برنده است
+    var frontId = null;
+    var bestScore = -1e9;
+    visible.forEach(function (x) {
+      var ck = cellKey(x.data.lat, x.data.lng);
+      if (bestInCell[ck] && bestInCell[ck].id === x.id && x.score > bestScore) {
+        bestScore = x.score;
+        frontId = x.id;
+      }
+    });
+    if (!frontId && visible.length) frontId = visible[0].id;
+
+    // آفست جزئی برای جلوگیری از همپوشانی کامل مارکرهای نزدیک
+    var cellCounts = {};
+    visible.forEach(function (x) {
+      var ck = cellKey(x.data.lat, x.data.lng);
+      cellCounts[ck] = (cellCounts[ck] || 0) + 1;
+    });
+    var cellIdx = {};
 
     feedMarkers.forEach(function (m, id) {
-      var show = visibleIds.has(id);
+      var show = !!visibleIds[id];
       m.entity.show = show;
       if (!show) return;
       var mode = (id === frontId) ? 'full' : 'mini';
@@ -670,8 +743,21 @@
         m.entity.billboard.height = g.h;
         m.mode = mode;
       }
-      // جلو بزرگ‌تر
-      m.entity.billboard.scale = mode === 'full' ? 1.15 : 0.8;
+      m.entity.billboard.scale = mode === 'full' ? 1.25 : 0.85;
+
+      // پخش جزئی موقعیت در سلول شلوغ
+      var ck = cellKey(m.data.lat, m.data.lng);
+      var n = cellCounts[ck] || 1;
+      var i = cellIdx[ck] || 0;
+      cellIdx[ck] = i + 1;
+      var dLat = 0, dLng = 0;
+      if (n > 1 && mode !== 'full') {
+        dLat = (i % 3 - 1) * 0.04;
+        dLng = (Math.floor(i / 3) % 3 - 1) * 0.04;
+      }
+      m.entity.position = Cesium.Cartesian3.fromDegrees(
+        m.data.lng + dLng, m.data.lat + dLat, 120
+      );
     });
     scene.requestRender();
   }
