@@ -103,39 +103,51 @@ api.init = function() {
       // نگه‌داشتن ۵ ثانیه روی دیوار → انتخاب رنگ
       const hit = pickSelectable(ndc);
       if (hit && (hit.userData.kind === 'wall' || hit.userData.kind === 'roomShell'
-          || hit.userData.kind === 'door' || hit.userData.kind === 'window')) {
+          || hit.userData.kind === 'door' || hit.userData.kind === 'window'
+          || hit.userData.kind === 'furniture' || hit.userData.kind === 'content'
+          || hit.userData.kind === 'roomFloor')) {
         state.longPressTarget = hit;
         state.longPressTimer = setTimeout(() => {
           if (!state.longPressTarget) return;
           const o = state.longPressTarget;
           clearLongPress();
+          // جلوگیری از تکرار رویداد در همان نگه‌داشتن
+          state._lastLongPressAt = Date.now();
           api.selectNode(o.userData.nodeId);
           const meta = o.userData.meta || {};
-          const type = (o.userData.kind === 'door' || o.userData.kind === 'window')
-            ? 'openingLongPress'
-            : 'wallLongPress';
+          const k = o.userData.kind;
+          let type = 'wallLongPress';
+          if (k === 'door' || k === 'window') type = 'openingLongPress';
+          else if (k === 'furniture' || k === 'content') type = 'itemLongPress';
+          else if (k === 'roomFloor') type = 'roomLongPress';
           api.postToFlutter({
             type,
             nodeId: o.userData.nodeId,
             sourceId: o.userData.sourceId,
             name: o.userData.name,
-            kind: o.userData.kind,
+            kind: k,
             side: o.userData.side || meta.side || null,
             colorHex: o.userData.colorHex || null,
             meta,
             w: o.userData._w || (meta.width) || null,
             h: o.userData._h || null,
           });
-          api.setHud(type === 'openingLongPress' ? 'تنظیم در/پنجره…' : 'انتخاب رنگ دیوار…');
+          const hud =
+            type === 'openingLongPress' ? 'تنظیم در/پنجره…' :
+            type === 'itemLongPress' ? 'منوی وسیله…' :
+            type === 'roomLongPress' ? 'منوی اتاق…' :
+            'انتخاب رنگ دیوار…';
+          api.setHud(hud);
         }, LONG_PRESS_MS);
       }
       if (!state.editMode) return;
       const obj = pickSelectable(ndc);
       if (!obj) return;
       const k = obj.userData.kind;
-      if (k === 'roomShell' || k === 'roomFloor' || k === 'wall') return;
-      // مبلمان یا در/پنجره
-      if (k !== 'door' && k !== 'window' && !obj.userData.sourceId) return;
+      // دیوار و پوستهٔ اتاق قابل کشیدن نیستند؛ کف اتاق در سالن قابل جابه‌جایی است
+      if (k === 'roomShell' || k === 'wall') return;
+      // مبلمان / کف اتاق / در / پنجره
+      if (k !== 'door' && k !== 'window' && k !== 'roomFloor' && !obj.userData.sourceId) return;
       state.dragTarget = obj;
       // نقطهٔ برخورد با صفحهٔ کف
       pointer.x = ndc.x;
