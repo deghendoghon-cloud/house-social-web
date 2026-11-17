@@ -609,7 +609,7 @@
       var id = d.id;
       seen.add(id);
       var existing = feedMarkers.get(id);
-      var pos = Cesium.Cartesian3.fromDegrees(d.lng, d.lat, 40);
+      var pos = Cesium.Cartesian3.fromDegrees(d.lng, d.lat, 120);
       if (existing) {
         existing.data = d;
         existing.entity.position = pos;
@@ -624,10 +624,10 @@
           width: g.w,
           height: g.h,
           verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
-          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
-          eyeOffset: new Cesium.Cartesian3(0, 0, -120),
-          scale: 0.85
+          eyeOffset: new Cesium.Cartesian3(0, 0, -150),
+          scale: 1.0
         }
       });
       e.houseId = id; // برای setupPicking (markerTap)
@@ -652,10 +652,9 @@
       var s = feedFacingScore(m.data.lat, m.data.lng);
       scored.push({ id: id, m: m, score: s });
     });
-    // فقط نیم‌کرهٔ روبه‌دوربین
-    scored = scored.filter(function (x) { return x.score > 0.08; });
     scored.sort(function (a, b) { return b.score - a.score; });
-    var visible = scored.slice(0, feedMaxVisible);
+    var frontish = scored.filter(function (x) { return x.score > 0.02; });
+    var visible = (frontish.length ? frontish : scored).slice(0, feedMaxVisible);
     var visibleIds = new Set(visible.map(function (x) { return x.id; }));
     var frontId = visible.length ? visible[0].id : null;
 
