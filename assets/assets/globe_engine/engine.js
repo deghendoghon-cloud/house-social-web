@@ -592,17 +592,90 @@
     }
     if (line && lines < maxLines) ctx.fillText(line, x, y + lines * lineH);
   }
-  function feedFacingScore(lat, lng) {
-    if (!widget || !widget.camera) return -1;
-    var cam = widget.camera;
-    var pos = Cesium.Cartesian3.fromDegrees(lng, lat, 0);
-    var camPos = cam.positionWC;
-    var ellipsoidal = Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(pos, new Cesium.Cartesian3());
-    var toCam = Cesium.Cartesian3.subtract(camPos, pos, new Cesium.Cartesian3());
-    Cesium.Cartesian3.normalize(toCam, toCam);
-    // هرچه سطح بیشتر رو به دوربین باشد، امتیاز بالاتر
-    return Cesium.Cartesian3.dot(ellipsoidal, toCam);
+
+  /** مرکز نما روی بیضی‌گون (نقطهٔ وسط صفحه) */
+  function feedViewCenter() {
+    if (!widget || !widget.camera || !scene) return null;
+    var canvas = scene.canvas;
+    var cx = canvas.clientWidth * 0.5;
+    var cy = canvas.clientHeight * 0.5;
+    var cartesian = widget.camera.pickEllipsoid(
+      new Cesium.Cartesian2(cx, cy),
+      Cesium.Ellipsoid.WGS84
+    );
+    if (!cartesian) {
+      // fallback: نقطه‌ای زیر دوربین
+      var c = widget.camera.positionCartographic;
+      if (!c) return null;
+      return { lat: Cesium.Math.toDegrees(c.latitude), lng: Cesium.Math.toDegrees(c.longitude) };
+    }
+    var carto = Cesium.Cartographic.fromCartesian(cartesian);
+    return {
+      lat: Cesium.Math.toDegrees(carto.latitude),
+      lng: Cesium.Math.toDegrees(carto.longitude)
+    };
   }
+
+  /**
+   * امتیاز نمایش:
+   * - پشت کره → منفی (مخفی)
+   * - جلو → هرچه به مرکز نما نزدیک‌تر، امتیاز بالاتر (۰..۱)
+   * خطوط شعاعی از مرکز زمین فقط برای اولویت‌بندی فاصله از مرکز نما استفاده می‌شوند.
+   */
+  function feedItemScores(lat, lng) {
+    if (!widget || !widget.camera) return { hemi: -1, center: -1 };
+    var pos = Cesium.Cartesian3.fromDegrees(lng, lat, 0);
+    var camPos = widget.camera.positionWC;
+    var pointDir = Cesium.Cartesian3.normalize(
+      Cesium.Cartesian3.clone(pos),
+      new Cesium.Cartesian3()
+    );
+    var camDir = Cesium.Cartesian3.normalize(
+      Cesium.Cartesian3.clone(camPos),
+      new Cesium.Cartesian3()
+    );
+    var hemi = Cesium.Cartesian3.dot(pointDir, camDir);
+    if (hemi <= 0.02) return { hemi: hemi, center: -1 };
+
+    var vc = feedViewCenter();
+    if (!vc) return { hemi: hemi, center: hemi * 0.3 };
+
+    // فاصلهٔ زاویه‌ای روی کره از مرکز نما (رادیان)
+    var p1 = Cesium.Cartographic.fromDegrees(vc.lng, vc.lat);
+    var p2 = Cesium.Cartographic.fromDegrees(lng, lat);
+    var c1 = Cesium.Ellipsoid.WGS84.cartographicToCartesian(p1);
+    var c2 = Cesium.Ellipsoid.WGS84.cartographicToCartesian(p2);
+    Cesium.Cartesian3.normalize(c1, c1);
+    Cesium.Cartesian3.normalize(c2, c2);
+    var dot = Cesium.Math.clamp(Cesium.Cartesian3.dot(c1, c2), -1, 1);
+    var ang = Math.acos(dot); // 0 = دقیقاً مرکز نما
+    // نرمال به امتیاز: نزدیک مرکز ≈ ۱، دور ≈ ۰
+    // شعاع دید تقریبی با ارتفاع دوربین بزرگ می‌شود
+    var h = widget.camera.positionCartographic
+      ? widget.camera.positionCartographic.height
+      : 1e7;
+    // در زوم شهری ang کوچک است؛ در نمای جهانی بزرگ‌تر
+    var ref = Math.max(0.08, Math.min(1.2, h / 8e6)); // رادیان مرجع
+    var center = Math.max(0, 1 - ang / ref);
+    return { hemi: hemi, center: center, ang: ang };
+  }
+
+  function ensureFeedLeader(m) {
+    if (m.leader) return m.leader;
+    var e = feedDs.entities.add({
+      id: 'feedline:' + m.data.id,
+      polyline: {
+        positions: [],
+        width: 1.25,
+        material: Cesium.Color.WHITE.withAlpha(0.28),
+        clampToGround: false,
+        arcType: Cesium.ArcType.NONE
+      }
+    });
+    m.leader = e;
+    return e;
+  }
+
   function setFeedItems(list) {
     if (!feedDs) return;
     feedDs.entities.suspendEvents();
@@ -612,7 +685,7 @@
       var id = d.id;
       seen.add(id);
       var existing = feedMarkers.get(id);
-      var pos = Cesium.Cartesian3.fromDegrees(d.lng, d.lat, 120);
+      var pos = Cesium.Cartesian3.fromDegrees(d.lng, d.lat, 70);
       if (existing) {
         existing.data = d;
         existing.entity.position = pos;
@@ -628,18 +701,21 @@
           height: g.h,
           verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
           heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
-          disableDepthTestDistance: Number.POSITIVE_INFINITY,
-          eyeOffset: new Cesium.Cartesian3(0, 0, -150),
+          disableDepthTestDistance: 0,
+          eyeOffset: new Cesium.Cartesian3(0, 0, -60),
           scale: 1.0
         }
       });
-      e.houseId = id; // برای setupPicking (markerTap)
+      e.houseId = id;
       e.feedId = id;
-      feedMarkers.set(id, { entity: e, data: d, mode: 'mini' });
+      feedMarkers.set(id, { entity: e, data: d, mode: 'mini', leader: null });
     });
     Array.from(feedMarkers.keys()).forEach(function (id) {
       if (!seen.has(id)) {
         var m = feedMarkers.get(id);
+        if (m.leader) {
+          try { feedDs.entities.remove(m.leader); } catch (e) {}
+        }
         feedDs.entities.remove(m.entity);
         feedMarkers.delete(id);
       }
@@ -648,10 +724,11 @@
     updateFeedFacing();
     scene.requestRender();
   }
+
   function updateFeedFacing() {
     if (!feedDs || feedMarkers.size === 0 || !widget) return;
 
-    // پیشرفت «دور گردش»: با چرخش heading حدود ۳۶۰ درجه یک epoch جلو می‌رود
+    // دور گردش برای چرخش آیتم‌های هم‌خانه
     try {
       var st = cameraState();
       if (st && typeof st.heading === 'number') {
@@ -661,7 +738,7 @@
         while (dh < -180) dh += 360;
         feedHeadingAcc += Math.abs(dh);
         feedLastHeading = st.heading;
-        if (feedHeadingAcc >= 300) { // تقریباً یک دور
+        if (feedHeadingAcc >= 300) {
           feedHeadingAcc = 0;
           feedCycleEpoch++;
         }
@@ -670,72 +747,68 @@
 
     var scored = [];
     feedMarkers.forEach(function (m, id) {
-      var s = feedFacingScore(m.data.lat, m.data.lng);
-      scored.push({ id: id, m: m, score: s, data: m.data });
+      var sc = feedItemScores(m.data.lat, m.data.lng);
+      scored.push({
+        id: id,
+        m: m,
+        hemi: sc.hemi,
+        center: sc.center,
+        ang: sc.ang != null ? sc.ang : 99,
+        data: m.data
+      });
     });
-    scored.sort(function (a, b) { return b.score - a.score; });
 
-    // از هر خانه / نویسنده در این دور فقط یک آیتم (چرخشی)
-    var pickedByGroup = {};
-    var rotated = [];
-    scored.forEach(function (x) {
+    // فقط جلو + قابل‌ارتباط با مرکز نما
+    var front = scored.filter(function (x) {
+      return x.hemi > 0.02 && x.center > 0.02;
+    });
+
+    // از هر خانه یک آیتم در این دور
+    var byGroup = {};
+    front.forEach(function (x) {
       var gkey = (x.data.houseId || x.data.authorId || x.id) + '';
-      if (!pickedByGroup[gkey]) pickedByGroup[gkey] = [];
-      pickedByGroup[gkey].push(x);
+      if (!byGroup[gkey]) byGroup[gkey] = [];
+      byGroup[gkey].push(x);
     });
-    Object.keys(pickedByGroup).forEach(function (gkey) {
-      var arr = pickedByGroup[gkey];
-      // پایدار بر اساس id مرتب تا epoch قابل پیش‌بینی باشد
-      arr.sort(function (a, b) { return (a.id < b.id) ? -1 : 1; });
-      var idx = feedCycleEpoch % arr.length;
-      rotated.push(arr[idx]);
-    });
-    rotated.sort(function (a, b) { return b.score - a.score; });
-
-    var frontish = rotated.filter(function (x) { return x.score > 0.02; });
-    var pool = frontish.length ? frontish : rotated;
-
-    // خوشه‌بندی جغرافیایی نزدیک: در هر سلول شبکه فقط یکی full می‌شود
-    var cellSize = 0.35; // درجه ≈ ۴۰km
-    function cellKey(lat, lng) {
-      return Math.round(lat / cellSize) + ':' + Math.round(lng / cellSize);
-    }
-    var bestInCell = {};
-    pool.forEach(function (x) {
-      var ck = cellKey(x.data.lat, x.data.lng);
-      if (!bestInCell[ck] || x.score > bestInCell[ck].score) bestInCell[ck] = x;
+    var rotated = [];
+    Object.keys(byGroup).forEach(function (gkey) {
+      var arr = byGroup[gkey];
+      arr.sort(function (a, b) { return a.id < b.id ? -1 : 1; });
+      rotated.push(arr[feedCycleEpoch % arr.length]);
     });
 
-    // حداکثر ۱۰ قابل‌نمایش؛ اولویت امتیاز
-    var visible = pool.slice(0, feedMaxVisible);
+    // نزدیک‌ترین به مرکز نما اول
+    rotated.sort(function (a, b) {
+      if (b.center !== a.center) return b.center - a.center;
+      return a.ang - b.ang;
+    });
+
+    var visible = rotated.slice(0, feedMaxVisible);
     var visibleIds = {};
-    visible.forEach(function (x) { visibleIds[x.id] = true; });
+    visible.forEach(function (x) { visibleIds[x.id] = x; });
 
-    // فقط یک full: بهترین در بین visible که در سلولش هم برنده است
-    var frontId = null;
-    var bestScore = -1e9;
-    visible.forEach(function (x) {
-      var ck = cellKey(x.data.lat, x.data.lng);
-      if (bestInCell[ck] && bestInCell[ck].id === x.id && x.score > bestScore) {
-        bestScore = x.score;
-        frontId = x.id;
-      }
-    });
-    if (!frontId && visible.length) frontId = visible[0].id;
-
-    // آفست جزئی برای جلوگیری از همپوشانی کامل مارکرهای نزدیک
-    var cellCounts = {};
-    visible.forEach(function (x) {
-      var ck = cellKey(x.data.lat, x.data.lng);
-      cellCounts[ck] = (cellCounts[ck] || 0) + 1;
-    });
-    var cellIdx = {};
+    // اصلی = نزدیک‌ترین به مرکز نقشه
+    var primaryId = visible.length ? visible[0].id : null;
 
     feedMarkers.forEach(function (m, id) {
-      var show = !!visibleIds[id];
+      var x = visibleIds[id];
+      var show = !!x;
       m.entity.show = show;
-      if (!show) return;
-      var mode = (id === frontId) ? 'full' : 'mini';
+
+      if (!show) {
+        m.mode = 'hidden';
+        if (m.leader) m.leader.show = false;
+        return;
+      }
+
+      var isPrimary = id === primaryId;
+      var mode = isPrimary ? 'full' : 'mini';
+      // سایز: اصلی بزرگ؛ جانبی متناسب با نزدیکی به مرکز
+      var t = Math.max(0, Math.min(1, x.center));
+      var scale = isPrimary
+        ? 1.2
+        : 0.38 + t * 0.45; // جانبی کوچک‌تر
+
       if (m.mode !== mode) {
         var g = feedBubbleImage(m.data, mode);
         m.entity.billboard.image = g.canvas;
@@ -743,24 +816,36 @@
         m.entity.billboard.height = g.h;
         m.mode = mode;
       }
-      m.entity.billboard.scale = mode === 'full' ? 1.25 : 0.85;
+      m.entity.billboard.scale = scale;
 
-      // پخش جزئی موقعیت در سلول شلوغ
-      var ck = cellKey(m.data.lat, m.data.lng);
-      var n = cellCounts[ck] || 1;
-      var i = cellIdx[ck] || 0;
-      cellIdx[ck] = i + 1;
-      var dLat = 0, dLng = 0;
-      if (n > 1 && mode !== 'full') {
-        dLat = (i % 3 - 1) * 0.04;
-        dLng = (Math.floor(i / 3) % 3 - 1) * 0.04;
-      }
+      // ارتفاع کم — نزدیک سطح؛ اصلی کمی بالاتر
+      var hBubble = isPrimary ? 90 : 55;
       m.entity.position = Cesium.Cartesian3.fromDegrees(
-        m.data.lng + dLng, m.data.lat + dLat, 120
+        m.data.lng, m.data.lat, hBubble
       );
+
+      // خط کمرنگ از خانه (سطح) به حباب — فقط برای جانبی‌ها
+      if (!isPrimary) {
+        var lead = ensureFeedLeader(m);
+        lead.show = true;
+        lead.polyline.positions = [
+          Cesium.Cartesian3.fromDegrees(m.data.lng, m.data.lat, 8),
+          Cesium.Cartesian3.fromDegrees(m.data.lng, m.data.lat, hBubble)
+        ];
+        lead.polyline.material = Cesium.Color.WHITE.withAlpha(0.22 + t * 0.15);
+      } else if (m.leader) {
+        m.leader.show = false;
+      }
     });
+
+    // حذف leader برای آیتم‌های حذف‌شده از لیست
+    feedMarkers.forEach(function (m, id) {
+      if (!visibleIds[id] && m.leader) m.leader.show = false;
+    });
+
     scene.requestRender();
   }
+
 
   function setMarkers(list) {
     housesDs.entities.suspendEvents();
