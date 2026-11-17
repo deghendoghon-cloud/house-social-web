@@ -50,6 +50,9 @@
   var housesDs = null;
   var featuredDs = null; // دفتر مرکزی و رویدادها: بدون خوشه‌بندی
   var specialsDs = null; // مرحلهٔ ۳: مناسبت‌ها و هشدارهای مدیر (نقطه + دایرهٔ اختیاری)
+  var feedDs = null; // حباب یادداشت/ویدئو/خبر
+  var feedMarkers = new Map(); // id -> {entity, data}
+  var feedMaxVisible = 10;
   var bordersPrim = null;
   var placesBillboards = null;
   var placesData = null;
@@ -362,6 +365,7 @@
         scene.requestRender();
       }
       if (want !== rotating) { rotating = want; post('autoRotate', { active: want }); }
+      if (want && feedMarkers.size) updateFeedFacing();
       requestAnimationFrame(tick);
     }
     requestAnimationFrame(tick);
@@ -522,6 +526,157 @@
     var img = pinImage(d.kind, d.id === selectedId, showText ? d.title : '', !!d.online, !!d.live, d.color, d.icon);
     return { image: img.canvas, width: img.w, height: img.h };
   }
+
+  // ---------- حباب خوراک روی کره ----------
+  function feedBubbleImage(d, mode) {
+    // mode: 'full' | 'mini'
+    var canvas = document.createElement('canvas');
+    var ctx = canvas.getContext('2d');
+    var isOffice = !!d.office;
+    var bg = d.bg || (isOffice ? '#1565C0' : '#37474F');
+    var title = (d.title || '').toString();
+    var body = (d.body || '').toString();
+    var author = (d.author || '').toString();
+    if (mode === 'full') {
+      canvas.width = 240; canvas.height = 132;
+      roundRect(ctx, 4, 4, 232, 124, 14, bg, 'rgba(255,255,255,0.25)');
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 13px sans-serif';
+      ctx.fillText(author ? author : (isOffice ? 'دفتر مرکزی' : 'یادداشت'), 16, 28);
+      ctx.font = '12px sans-serif';
+      wrapText(ctx, body || title, 16, 48, 208, 16, 4);
+      if (d.kind === 'video') {
+        ctx.fillStyle = 'rgba(0,0,0,0.35)';
+        ctx.beginPath(); ctx.arc(210, 110, 12, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#fff'; ctx.font = '10px sans-serif'; ctx.fillText('▶', 206, 114);
+      }
+    } else {
+      canvas.width = 140; canvas.height = 40;
+      roundRect(ctx, 2, 2, 136, 36, 10, bg, 'rgba(255,255,255,0.2)');
+      ctx.fillStyle = '#fff';
+      ctx.font = '11px sans-serif';
+      var t = title.length > 22 ? title.slice(0, 21) + '…' : title;
+      ctx.fillText(t || '…', 12, 24);
+    }
+    return { canvas: canvas, w: canvas.width, h: canvas.height };
+  }
+  function roundRect(ctx, x, y, w, h, r, fill, stroke) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+    if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+    if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1; ctx.stroke(); }
+  }
+  function wrapText(ctx, text, x, y, maxW, lineH, maxLines) {
+    var words = (text || '').split(/\s+/);
+    var line = '';
+    var lines = 0;
+    for (var i = 0; i < words.length; i++) {
+      var test = line ? line + ' ' + words[i] : words[i];
+      if (ctx.measureText(test).width > maxW && line) {
+        ctx.fillText(line, x, y + lines * lineH);
+        lines++;
+        line = words[i];
+        if (lines >= maxLines) {
+          ctx.fillText(line.slice(0, 18) + '…', x, y + lines * lineH);
+          return;
+        }
+      } else line = test;
+    }
+    if (line && lines < maxLines) ctx.fillText(line, x, y + lines * lineH);
+  }
+  function feedFacingScore(lat, lng) {
+    if (!widget || !widget.camera) return -1;
+    var cam = widget.camera;
+    var pos = Cesium.Cartesian3.fromDegrees(lng, lat, 0);
+    var camPos = cam.positionWC;
+    var ellipsoidal = Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(pos, new Cesium.Cartesian3());
+    var toCam = Cesium.Cartesian3.subtract(camPos, pos, new Cesium.Cartesian3());
+    Cesium.Cartesian3.normalize(toCam, toCam);
+    // هرچه سطح بیشتر رو به دوربین باشد، امتیاز بالاتر
+    return Cesium.Cartesian3.dot(ellipsoidal, toCam);
+  }
+  function setFeedItems(list) {
+    if (!feedDs) return;
+    feedDs.entities.suspendEvents();
+    var seen = new Set();
+    (list || []).forEach(function (d) {
+      if (typeof d.lat !== 'number' || typeof d.lng !== 'number') return;
+      var id = d.id;
+      seen.add(id);
+      var existing = feedMarkers.get(id);
+      var pos = Cesium.Cartesian3.fromDegrees(d.lng, d.lat, 40);
+      if (existing) {
+        existing.data = d;
+        existing.entity.position = pos;
+        return;
+      }
+      var g = feedBubbleImage(d, 'mini');
+      var e = feedDs.entities.add({
+        id: 'feed:' + id,
+        position: pos,
+        billboard: {
+          image: g.canvas,
+          width: g.w,
+          height: g.h,
+          verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          eyeOffset: new Cesium.Cartesian3(0, 0, -120),
+          scale: 0.85
+        }
+      });
+      e.houseId = id; // برای setupPicking (markerTap)
+      e.feedId = id;
+      feedMarkers.set(id, { entity: e, data: d, mode: 'mini' });
+    });
+    Array.from(feedMarkers.keys()).forEach(function (id) {
+      if (!seen.has(id)) {
+        var m = feedMarkers.get(id);
+        feedDs.entities.remove(m.entity);
+        feedMarkers.delete(id);
+      }
+    });
+    feedDs.entities.resumeEvents();
+    updateFeedFacing();
+    scene.requestRender();
+  }
+  function updateFeedFacing() {
+    if (!feedDs || feedMarkers.size === 0 || !widget) return;
+    var scored = [];
+    feedMarkers.forEach(function (m, id) {
+      var s = feedFacingScore(m.data.lat, m.data.lng);
+      scored.push({ id: id, m: m, score: s });
+    });
+    // فقط نیم‌کرهٔ روبه‌دوربین
+    scored = scored.filter(function (x) { return x.score > 0.08; });
+    scored.sort(function (a, b) { return b.score - a.score; });
+    var visible = scored.slice(0, feedMaxVisible);
+    var visibleIds = new Set(visible.map(function (x) { return x.id; }));
+    var frontId = visible.length ? visible[0].id : null;
+
+    feedMarkers.forEach(function (m, id) {
+      var show = visibleIds.has(id);
+      m.entity.show = show;
+      if (!show) return;
+      var mode = (id === frontId) ? 'full' : 'mini';
+      if (m.mode !== mode) {
+        var g = feedBubbleImage(m.data, mode);
+        m.entity.billboard.image = g.canvas;
+        m.entity.billboard.width = g.w;
+        m.entity.billboard.height = g.h;
+        m.mode = mode;
+      }
+      // جلو بزرگ‌تر
+      m.entity.billboard.scale = mode === 'full' ? 1.15 : 0.8;
+    });
+    scene.requestRender();
+  }
+
   function setMarkers(list) {
     housesDs.entities.suspendEvents();
     featuredDs.entities.suspendEvents();
@@ -727,6 +882,7 @@
       if (bordersPrim) bordersPrim.show = overlays.borders && st.height > 1.5e5;
       updatePlaces();
       updateDailyVisibility();
+      if (feedMarkers.size) updateFeedFacing();
       var sun = lighting.dayNight ? sunInfo() : null;
       if (sun) { st.sunLat = sun.sunLat; st.sunLng = sun.sunLng; }
       post('camera', st);
@@ -893,6 +1049,7 @@
     if (!cmd || !widget) return;
     switch (cmd.cmd) {
       case 'setMarkers': setMarkers(cmd.markers); break;
+      case 'setFeedItems': setFeedItems(cmd.items); break;
       case 'setUserLocation': setUserLocation(cmd); break;
       case 'clearUserLocation': clearUserLocation(); break;
       case 'flyTo': flyTo(cmd); break;
@@ -1023,6 +1180,8 @@
       widget.dataSources.add(featuredDs);
       specialsDs = new Cesium.CustomDataSource('specials');
       widget.dataSources.add(specialsDs);
+      feedDs = new Cesium.CustomDataSource('feed');
+      widget.dataSources.add(feedDs);
       setupClustering();
       setupPicking();
       setupIdleTracking();
